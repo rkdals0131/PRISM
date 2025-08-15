@@ -84,7 +84,7 @@ Input Stage:          Processing Pipeline:              Output Stage:
 **Purpose**: Increase LiDAR point density from 32 to 96 channels using cubic interpolation
 
 **Core Algorithm**:
-- Hermite spline interpolation for smooth channel transitions
+- Catmull-Rom (cardinal Hermite spline) interpolation for smooth channel transitions
 - Vectorized computation using Eigen arrays
 - Integration with existing improved_interpolation_node.cpp logic
 
@@ -100,7 +100,7 @@ public:
     void interpolate(const PointCloudSoA& input, 
                     PointCloudSoA& output);
 private:
-    void hermiteSplineInterpolation(const Eigen::VectorXf& rings);
+    void catmullRomInterpolation(const Eigen::VectorXf& rings);
 };
 ```
 
@@ -160,7 +160,7 @@ public:
 **Key Features**:
 - Bilinear interpolation for sub-pixel sampling
 - Distance-weighted multi-camera blending
-- Occlusion handling with depth buffering
+- Basic occlusion handling with nearest-camera priority (depth buffering in v1.1+)
 - Cache-optimized image access patterns
 
 **Interface**:
@@ -181,10 +181,10 @@ public:
 **Purpose**: Align multi-rate sensor data (20Hz LiDAR, 30Hz cameras)
 
 **Key Features**:
-- Adaptive buffering for different frequencies
-- Timestamp-based message alignment
-- Graceful handling of missing messages
-- Configurable synchronization tolerance
+- ApproximateTime policy for multi-rate sensor alignment (20Hz vs 30Hz)
+- Adaptive buffering with queue size tuning
+- Graceful handling of missing messages with drop policy
+- Configurable synchronization tolerance (default 0.1s)
 
 ## Package Structure
 
@@ -249,10 +249,10 @@ struct PointCloudSoA {
 class MemoryPool {
     std::vector<PointCloudSoA> pool;
     std::queue<size_t> available_indices;
-    std::mutex pool_mutex;
+    std::mutex pool_mutex;  // Thread-safe mutex-based protection
 public:
-    std::unique_ptr<PointCloudSoA> acquire();
-    void release(std::unique_ptr<PointCloudSoA> ptr);
+    std::unique_ptr<PointCloudSoA> acquire();  // Mutex-protected
+    void release(std::unique_ptr<PointCloudSoA> ptr);  // Thread-safe
 };
 ```
 
@@ -278,8 +278,8 @@ Main Thread:           Worker Threads:
 ### ROS2 Topics
 **Inputs**:
 - `/ouster/points` (sensor_msgs::PointCloud2) - 32-channel LiDAR at 20Hz
-- `/usb_cam_1/image_raw/uncompressed` (sensor_msgs::Image) - Camera 1 at 30Hz
-- `/usb_cam_2/image_raw/uncompressed` (sensor_msgs::Image) - Camera 2 at 30Hz
+- `/usb_cam_1/image_raw` (sensor_msgs::Image) - Camera 1 at 30Hz
+- `/usb_cam_2/image_raw` (sensor_msgs::Image) - Camera 2 at 30Hz
 
 **Outputs**:
 - `/ouster/points/colored` (sensor_msgs::PointCloud2 with RGB fields) - Colored point cloud at 20Hz
@@ -306,7 +306,7 @@ prism:
 - **TBB parallel_for** for interpolation loops
 - **Dual-camera projection** in parallel threads  
 - **SIMD vectorization** with Eigen for geometric operations
-- **Lock-free ring buffers** for inter-thread communication
+- **Thread-safe circular buffers** for inter-thread communication (mutex-protected)
 
 ### 2. Memory Management
 - **Pre-allocated memory pools** for point clouds

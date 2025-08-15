@@ -463,7 +463,6 @@ void ProjectionEngine::processWithDistortionCorrection(
     const float cx = intrinsics.cx;
     const float cy = intrinsics.cy;
     
-    #pragma omp parallel for
     for (size_t i = 0; i < camera_points.size(); ++i) {
         const auto& cp = camera_points[i];
         
@@ -482,16 +481,13 @@ void ProjectionEngine::processWithDistortionCorrection(
             corrected.y * fy + cy
         );
         
-        // Thread-safe result storage
-        #pragma omp critical
-        {
-            result.pixel_coordinates.push_back(pixel);
-            result.original_indices.push_back(point_indices[i]);
-            result.depths.push_back(cp.z());
-            result.in_image_bounds.push_back(
-                pixel.x >= 0 && pixel.x < intrinsics.image_size.width &&
-                pixel.y >= 0 && pixel.y < intrinsics.image_size.height);
-        }
+        // Store results
+        result.pixel_coordinates.push_back(pixel);
+        result.original_indices.push_back(point_indices[i]);
+        result.depths.push_back(cp.z());
+        result.in_image_bounds.push_back(
+            pixel.x >= 0 && pixel.x < intrinsics.image_size.width &&
+            pixel.y >= 0 && pixel.y < intrinsics.image_size.height);
     }
 }
 

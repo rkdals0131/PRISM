@@ -23,31 +23,32 @@
 ### **4. 입/출력 (Inputs & Outputs)**
 
 - **구독 (Inputs):**
-  1.  `라이다 원본 데이터`: `/ouster/points` (`sensor_msgs/msg/PointCloud2`) - 32채널, 20Hz
-  2.  `카메라 1 원본 이미지`: `/usb_cam_1/image_raw/uncompressed` (`sensor_msgs/msg/Image`) - 640x360, 30Hz
-  3.  `카메라 2 원본 이미지`: `/usb_cam_2/image_raw/uncompressed` (`sensor_msgs/msg/Image`) - 640x360, 30Hz
-  4.  `캘리브레이션 파라미터`: CALICO 형식 YAML 파일에서 로드
+   1.  `라이다 원본 데이터`: `/ouster/points` (`sensor_msgs/msg/PointCloud2`) - 32채널, 20Hz
+   2.  `카메라 1 원본 이미지`: `/usb_cam_1/image_raw` (`sensor_msgs/msg/Image`) - 640x360, 30Hz
+   3.  `카메라 2 원본 이미지`: `/usb_cam_2/image_raw` (`sensor_msgs/msg/Image`) - 640x360, 30Hz
+   4.  `전송 방식 힌트`: `image_transport`를 사용해 `raw` 전송 선택 (압축/비압축 전환은 transport로 제어)
+   5.  `캘리브레이션 파라미터`: CALICO 형식 YAML 파일에서 로드
       - `multi_camera_intrinsic_calibration.yaml`: 카메라 내부 파라미터 (K matrix, distortion coeffs)
       - `multi_camera_extrinsic_calibration.yaml`: 라이다-카메라 간 외부 변환 행렬 (4x4 transformation matrix) 
 
 - **발행 (Outputs):**
-  1.  **`고품질 융합 데이터` (`/ouster/points/colored`):**
+   1.  **`고품질 융합 데이터` (`/ouster/points/colored`):**
       - **메시지 타입:** `sensor_msgs/msg/PointCloud2`
-      - **내용:** `[x, y, z, intensity, r, g, b]` 구조를 가진 고밀도 컬러 포인트클라우드. 기존 PointCloud2 포맷에 RGB 필드를 추가하여 발행합니다.
+      - **내용:** `[x, y, z, intensity, rgb]` 구조를 가진 고밀도 컬러 포인트클라우드. 기본은 packed `rgb` float32 필드(PCL/RViz 호환)이며, 옵션으로 `r,g,b` uint8 분리 필드를 제공할 수 있습니다.
       - **주기:** 20Hz (라이다 입력과 동기화)
 
 ### **5. 핵심 기능 및 단계별 구현 계획**
 
 1.  **실시간 데이터 동기화 (Time Synchronization)**
-    - `message_filters` 라이브러리를 사용하여 라이다와 카메라 토픽의 타임스탬프를 나노초(ns) 단위까지 정확하게 동기화합니다.
+    - `message_filters::ApproximateTime` 정책을 사용하여 라이다(20Hz)와 카메라(30Hz) 토픽의 타임스탬프를 동기화합니다. 이종 주기 센서 간 적응형 버퍼링으로 안정적인 동기화를 보장합니다.
 
 2.  **고성능 좌표 변환 (High-Performance Transformation)**
     - 사전 캘리브레이션된 extrinsic 변환 행렬과 `Eigen` 라이브러리를 사용하여 라이다 좌표계의 모든 포인트를 각 카메라 좌표계로 실시간 변환합니다.
-    - CALICO에서 제공하는 4x4 변환 행렬을 직접 적용하여 tf2 의존성 없이 고속 처리가 가능합니다.
+    - 프레임 일관성과 시스템 통합성을 위해 `tf2`의 정적 변환을 기본으로 사용하고, 실행 경로에서는 변환 행렬 캐싱으로 오버헤드를 최소화합니다.
 
 3.  **`FILC` 채널 보간 기능 내장 (Channel Interpolation)**
     - 기존에 구현된 `FILC` 알고리즘(improved_interpolation_node.cpp)을 C++ 헤더 형태로 PRISM 프로젝트에 통합합니다.
-    - Catmull-Rom 큐빅 보간을 사용하여 원본 32채널 데이터를 96채널(3배)의 촘촘한 데이터로 보간합니다.
+    - Catmull-Rom (cardinal Hermite spline의 일종) 큐빅 보간을 사용하여 원본 32채널 데이터를 96채널(3배)의 촘촘한 데이터로 보간합니다.
     - OS1-32 고도각 정보를 활용한 정밀한 보간으로 포인트클라우드 밀도를 효과적으로 증가시킵니다.
 
 4.  **포인트클라우드 컬러화 (Point Cloud Colorization)**
@@ -125,7 +126,7 @@
      - QoS 설정: Best Effort, Durability Volatile
 
 4. **RGB 필드 상세 명세**
-   - RGB 패킹 형식: `rgb` float32 또는 `r,g,b` uint8
+   - RGB 패킹 형식: 기본 `rgb` float32 (PCL/RViz 호환), 옵션으로 `r,g,b` uint8 지원
    - 색상 없는 포인트 처리: 기본값 (128, 128, 128) 또는 제거
    - frame_id 일관성 보장
 
@@ -170,7 +171,7 @@
   ```cmake
   - ROS2 패키지 의존성 설정 (rclcpp, sensor_msgs, cv_bridge)
   - 외부 라이브러리 연결 (Eigen3, OpenCV, PCL, TBB)
-  - 컴파일 옵션 설정 (-O3, -march=native, -fopenmp)
+  - 컴파일 옵션 설정 (-O3, 조건부 -march=native, TBB 활용)
   - 설치 규칙 정의
   ```
 
@@ -212,7 +213,7 @@
 - **구현 파일**: `include/prism/performance/MemoryPool.hpp`
 - **핵심 기능**:
   - a. 고정 크기 블록 풀
-  - b. Lock-free 할당/해제
+  - b. Thread-safe 할당/해제 (mutex 기반)
   - c. NUMA 인식 할당
   - d. 통계 수집 기능
 
@@ -254,7 +255,7 @@
 - **소스 참조**: `filc/src/improved_interpolation_node.cpp`
 - **핵심 구현**:
   - a. OS1-32 고도각 테이블
-  - b. Catmull-Rom 스플라인 구현
+  - b. Catmull-Rom (cardinal Hermite) 스플라인 구현
   - c. 불연속성 감지 알고리즘
 
 #### **3.1.2. 싱글스레드 구현** 🔴
@@ -315,7 +316,7 @@
 - **상태**: TODO
 - **예상 시간**: 4시간
 - **구현 방식**:
-  - a. std::async로 비동기 실행
+  - a. TBB parallel_for로 병렬 실행
   - b. 결과 동기화 및 병합
 
 #### **4.2.2. 유효성 검증** 🔴
@@ -327,12 +328,12 @@
   - 오클루전 처리
 
 ### **4.3. GPU 투영 가속** ⚪
-#### **4.3.1. OpenCV GPU 활용** ⚪
-- **상태**: OPTIONAL
-- **예상 시간**: 4시간
+#### **4.3.1. GPU 가속 검토** ⚪
+- **상태**: OPTIONAL (v1.1 이후)
+- **예상 시간**: 향후 결정
 - **구현 내용**:
-  - cv::cuda::projectPoints 활용
-  - 배치 처리 최적화
+  - 프로파일링 후 병목 지점 확인 시 검토
+  - 커스텀 CUDA 커널 구현 고려
 
 #### **4.3.2. CUDA 커널 구현** ⚪
 - **상태**: OPTIONAL
@@ -396,16 +397,16 @@
 - **구현 파일**: `src/prism_node.cpp`
 - **구독 토픽**:
   - `/ouster/points` (20Hz)
-  - `/usb_cam_1/image_raw/uncompressed` (30Hz)
-  - `/usb_cam_2/image_raw/uncompressed` (30Hz)
+  - `/usb_cam_1/image_raw` (30Hz)
+  - `/usb_cam_2/image_raw` (30Hz)
 
 #### **6.1.2. 시간 동기화** 🔴
 - **상태**: TODO
 - **예상 시간**: 6시간
 - **구현 방식**:
-  - a. message_filters::TimeSynchronizer
-  - b. 적응형 버퍼링
-  - c. 타임스탬프 보정
+  - a. message_filters::Synchronizer<ApproximateTime>
+  - b. 적응형 버퍼링(슬롭/큐 사이즈 튜닝)
+  - c. 타임스탬프 보정 및 드롭 정책
 
 #### **6.1.3. 발행자 구현** 🔴
 - **상태**: TODO
@@ -543,7 +544,7 @@
 ### **9.1. 기술 문서** 🟢
 #### **9.1.1. 아키텍처 문서** 🟢
 - **상태**: DONE
-- **산출물**: `docs/architecture.md`
+- **산출물**: `prism/docs/architecture.md`
 
 #### **9.1.2. API 레퍼런스** 🔴
 - **상태**: TODO
@@ -609,8 +610,8 @@ Phase 8 (문서화배포)
 
 ### **일정 리스크**
 1. **CUDA 개발 지연**
-   - 대응: OpenCV GPU로 우선 구현
-   - 폴백: CPU SIMD 최적화 집중
+   - 대응: v1.0은 CPU SIMD+TBB 최적화에 집중하고, GPU 가속은 v1.1로 이관
+   - 폴백: CPU 경로 성능 개선 지속
 
 2. **테스트 데이터 부족**
    - 대응: 시뮬레이션 데이터 생성
@@ -621,9 +622,9 @@ Phase 8 (문서화배포)
 ## **성공 지표 (KPI)**
 
 ### **필수 달성 목표**
-- ✅ 처리 레이턴시: < 50ms (95 percentile)
-- ✅ CPU 사용률: < 30% (평균)
-- ✅ 메모리 사용량: < 2GB
+- ✅ 처리 레이턴시: < 50ms (95 percentile) [전제: Intel i7-10700K, Ubuntu 22.04, ROS2 Humble]
+- ✅ CPU 사용률: < 30% (평균) [전제: 8코어 CPU, TBB 최적화 활성]
+- ✅ 메모리 사용량: < 2GB [전제: 64-bit system, Release 빌드]
 - ✅ 포인트 처리율: > 98%
 - ✅ 색상 정확도: > 95%
 

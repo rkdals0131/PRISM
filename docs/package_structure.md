@@ -99,7 +99,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(
 Advanced point cloud interpolation algorithms based on FILC improvements:
 
 **Key Components:**
-- `CubicInterpolator.hpp` - Catmull-Rom cubic spline interpolation
+- `CubicInterpolator.hpp` - Catmull-Rom (cardinal Hermite spline) cubic interpolation
 - `BeamAltitudeManager.hpp` - OS1-32 beam angle management
 - `AdaptiveInterpolation.hpp` - Discontinuity-aware interpolation
 - `InterpolationOptimizer.hpp` - SIMD-optimized algorithms
@@ -124,7 +124,7 @@ public:
         const std::vector<float>& beam_altitudes);
         
 private:
-    float catmullRomSpline(float p0, float p1, float p2, float p3, float t);
+    float catmullRomSpline(float p0, float p1, float p2, float p3, float t);  // Cardinal Hermite with tension=0.5
     bool detectDiscontinuity(const pcl::PointXYZI& p1, const pcl::PointXYZI& p2);
 };
 
@@ -139,7 +139,7 @@ Camera-LiDAR coordinate transformation and projection utilities:
 - `ProjectionManager.hpp` - Multi-camera projection coordinator
 - `CalibrationLoader.hpp` - YAML calibration data parser
 - `DistortionCorrection.hpp` - Lens distortion correction algorithms
-- `DepthBuffer.hpp` - Z-buffering for occlusion handling
+- `DepthBuffer.hpp` - Z-buffering for occlusion handling (v1.1+). v1.0은 근사적 오클루전 처리.
 
 **Integration with CALICO:**
 ```cpp
@@ -272,11 +272,13 @@ CubicInterpolator::interpolate(const pcl::PointCloud<pcl::PointXYZI>& input,
     validateInput(input, scale_factor);
     prepareOutputCloud(input.size() * scale_factor);
     
-    // Core algorithm (with SIMD optimization)
-    #pragma omp parallel for
-    for (size_t col = 0; col < input.width; ++col) {
-        processColumn(input, col, scale_factor, beam_altitudes);
-    }
+    // Core algorithm (with TBB parallel processing)
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, input.width),
+        [&](const tbb::blocked_range<size_t>& range) {
+            for (size_t col = range.begin(); col != range.end(); ++col) {
+                processColumn(input, col, scale_factor, beam_altitudes);
+            }
+        });
     
     // Post-processing and result packaging
     auto end_time = std::chrono::high_resolution_clock::now();
@@ -297,7 +299,12 @@ project(prism)
 
 # Compiler configuration
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -O3 -march=native)
+  add_compile_options(-Wall -Wextra -Wpedantic -O3)
+  # Optional native optimization
+  option(PRISM_ENABLE_NATIVE_OPT "Enable native CPU optimizations" OFF)
+  if(PRISM_ENABLE_NATIVE_OPT)
+    add_compile_options(-march=native)
+  endif()
 endif()
 
 # C++17 requirement for advanced features
@@ -317,9 +324,8 @@ find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgproc calib3d)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(TBB REQUIRED)
 
-# Optional performance libraries
-find_package(PkgConfig)
-pkg_check_modules(LIBRT rt)
+# Performance libraries (TBB is required, no OpenMP)
+find_package(TBB REQUIRED)
 
 # Include directories
 include_directories(
@@ -420,12 +426,12 @@ ament_package()
 - `PCL 1.12+` - Point Cloud Library for 3D processing
 - `OpenCV 4.5+` - Computer vision and image processing
 - `Eigen3 3.3+` - Linear algebra and matrix operations
-- `TBB` - Threading Building Blocks for parallelization
+- `TBB` - Intel Threading Building Blocks for all parallelization (unified concurrency framework)
 
 **Optional Performance Libraries:**
 - `Intel IPP` - Integrated Performance Primitives for SIMD
 - `CUDA` - GPU acceleration (if available)
-- `OpenMP` - Additional threading support
+- `Benchmarking tools` - Google Benchmark for performance measurement
 
 ### Package.xml Configuration
 ```xml

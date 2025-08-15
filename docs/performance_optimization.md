@@ -282,9 +282,9 @@ public:
         }
     }
     
-    // Thread-safe allocation
+    // Thread-safe allocation (mutex-based for v1.0)
     T* allocate() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::lock_guard<std::mutex> lock(mutex_);  // Mutex-protected, not lock-free
         
         if (!free_objects_.empty()) {
             T* obj = free_objects_.back();
@@ -1107,7 +1107,9 @@ private:
 } // namespace prism
 ```
 
-## Lock-Free Data Structures
+## Lock-Free Data Structures (v1.1+, optional)
+
+Note: v1.0은 mutex 기반의 thread-safe 구조를 기본으로 사용합니다. Lock-free 자료구조는 v1.1+에서 선택적으로 도입합니다.
 
 ### 1. Lock-Free Ring Buffer
 
@@ -1701,10 +1703,9 @@ namespace performance {
 enum class ExecutionMode {
     SINGLE_THREAD,      // Debug mode - sequential execution
     CPU_PARALLEL,       // Multi-threaded CPU execution
-    CPU_SIMD,          // CPU with SIMD optimization
-    GPU_OPENCV,        // GPU acceleration via OpenCV
-    GPU_CUDA,          // Full CUDA implementation
-    AUTO               // Runtime selection based on workload
+    CPU_SIMD,           // CPU with SIMD optimization
+    GPU_CUDA,           // Full CUDA implementation (v1.1+)
+    AUTO                // Runtime selection based on workload
 };
 
 class ExecutionManager {
@@ -1739,9 +1740,6 @@ public:
             } else if (checkCUDAAvailable()) {
                 // Very large workload - GPU if available
                 return ExecutionMode::GPU_CUDA;
-            } else if (checkOpenCVGPUAvailable()) {
-                // Fallback to OpenCV GPU
-                return ExecutionMode::GPU_OPENCV;
             } else {
                 // Fallback to best CPU mode
                 return ExecutionMode::CPU_SIMD;
@@ -1879,7 +1877,7 @@ private:
 } // namespace prism
 ```
 
-## GPU Acceleration Strategies
+## GPU Acceleration Strategies (v1.1+ Future Enhancement)
 
 ### 1. OpenCV GPU Methods for Simple Operations
 
@@ -2165,10 +2163,13 @@ public:
         const size_t num_points = points.size();
         
         // Copy point cloud to pinned memory
-        #pragma omp parallel for
-        for (size_t i = 0; i < num_points; ++i) {
-            h_lidar_points_[i] = make_float3(points.x[i], points.y[i], points.z[i]);
-        }
+        // Use TBB for parallel copy instead of OpenMP
+        tbb::parallel_for(tbb::blocked_range<size_t>(0, num_points),
+            [&](const tbb::blocked_range<size_t>& range) {
+                for (size_t i = range.begin(); i != range.end(); ++i) {
+                    h_lidar_points_[i] = make_float3(points.x[i], points.y[i], points.z[i]);
+                }
+            });
         
         // Async copy to device
         cudaMemcpyAsync(d_lidar_points_, h_lidar_points_,

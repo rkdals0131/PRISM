@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides comprehensive guidance for integrating advanced interpolation algorithms into the PRISM package, based on the proven FILC implementation. The integration focuses on cubic spline interpolation, OS1-32 beam altitude handling, and performance optimizations including SIMD vectorization and memory-efficient processing.
+This document provides comprehensive guidance for integrating advanced interpolation algorithms into the PRISM package, based on the proven FILC implementation. The integration focuses on Catmull-Rom (cardinal Hermite) cubic spline interpolation, OS1-32 beam altitude handling, and performance optimizations including SIMD vectorization and memory-efficient processing.
 
 ## Analysis of Existing FILC Interpolation Logic
 
@@ -369,7 +369,6 @@ struct PointCloudSoA {
         PointCloudSoA soa;
         soa.resize(cloud.size());
         
-        #pragma omp parallel for
         for (size_t i = 0; i < cloud.size(); ++i) {
             const auto& pt = cloud.points[i];
             soa.x[i] = pt.x;
@@ -386,7 +385,6 @@ struct PointCloudSoA {
         auto cloud = std::make_shared<pcl::PointCloud<pcl::PointXYZI>>();
         cloud->points.resize(size());
         
-        #pragma omp parallel for
         for (size_t i = 0; i < size(); ++i) {
             auto& pt = cloud->points[i];
             pt.x = x[i];
