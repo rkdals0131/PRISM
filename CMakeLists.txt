@@ -155,6 +155,10 @@ ament_target_dependencies(${PROJECT_NAME}_core
 # Installation
 install(TARGETS
   ${PROJECT_NAME}_core
+  DESTINATION lib
+)
+
+install(TARGETS
   prism_interpolation_node
   DESTINATION lib/${PROJECT_NAME}
 )
