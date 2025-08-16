@@ -1,10 +1,10 @@
 /**
  * @file prism_interpolation_node.cpp
- * @brief ROS2 node for PRISM interpolation - Phase 2 (Simplified version based on FILC)
+ * @brief ROS2 node for PRISM interpolation - Phase 2 (BeamHandler Enhanced Version)
  * 
  * This node demonstrates the interpolation capabilities of PRISM by:
- * - Subscribing to LiDAR point cloud data  
- * - Applying simple linear/cubic interpolation to increase channel density
+ * - Using BeamAltitudeManager for accurate OS1-32 beam modeling
+ * - Applying beam-aware interpolation to increase channel density
  * - Publishing the interpolated point cloud for visualization
  */
 
@@ -14,22 +14,25 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include "prism/interpolation/beam_altitude_manager.hpp"
+
 #include <chrono>
 #include <memory>
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <limits>
 #include <omp.h>
 
 namespace prism {
 namespace nodes {
 
 /**
- * @brief Simplified PRISM interpolation node (based on FILC approach)
+ * @brief BeamHandler-enhanced PRISM interpolation node
  * 
  * This node demonstrates Phase 2 functionality by interpolating
  * OS1-32 LiDAR data from 32 channels to higher density using
- * simple linear interpolation.
+ * beam-aware interpolation with BeamAltitudeManager.
  */
 class PRISMInterpolationNode : public rclcpp::Node {
 public:
@@ -58,6 +61,29 @@ public:
         input_channels_ = 32;  // OS1-32
         output_channels_ = static_cast<int>(input_channels_ * scale_factor_);
         
+        // Initialize BeamAltitudeManager
+        interpolation::BeamAltitudeConfig beam_config;
+        beam_config.input_beams = input_channels_;
+        beam_config.output_beams = output_channels_;
+        beam_config.preserve_original_beams = true;
+        beam_config.uniform_distribution = true;
+        
+        beam_manager_ = std::make_unique<interpolation::BeamAltitudeManager>(beam_config);
+        if (!beam_manager_->initializeOS132Beams()) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to initialize OS1-32 beam configuration");
+            throw std::runtime_error("Beam initialization failed");
+        }
+        
+        if (!beam_manager_->generateInterpolatedBeams()) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to generate interpolated beam configuration");
+            throw std::runtime_error("Beam interpolation generation failed");
+        }
+        
+        RCLCPP_INFO(this->get_logger(), 
+            "BeamAltitudeManager initialized: %zu -> %zu beams",
+            beam_manager_->getInputBeamCount(),
+            beam_manager_->getOutputBeamCount());
+        
         // Create subscriber
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             input_topic,
@@ -83,16 +109,18 @@ public:
         omp_set_num_threads(num_threads);
         
         RCLCPP_INFO(this->get_logger(), 
-            "PRISM Interpolation Node (Simplified + OpenMP) initialized");
+            "PRISM Interpolation Node (BeamHandler + OpenMP) initialized");
         RCLCPP_INFO(this->get_logger(), 
             "  Scale Factor: %.1fx (%d -> %d channels)",
             scale_factor_, input_channels_, output_channels_);
         RCLCPP_INFO(this->get_logger(),
-            "  Method: %s", interpolation_method_.c_str());
+            "  Method: %s (beam-aware)", interpolation_method_.c_str());
         RCLCPP_INFO(this->get_logger(),
             "  Discontinuity Threshold: %.2f m", discontinuity_threshold_);
         RCLCPP_INFO(this->get_logger(),
             "  OpenMP Threads: %d", num_threads);
+        RCLCPP_INFO(this->get_logger(),
+            "  BeamHandler: Active with OS1-32 altitude mapping");
     }
     
     /**
@@ -159,75 +187,85 @@ private:
     }
     
     /**
-     * @brief Perform simple interpolation (based on FILC approach)
+     * @brief Perform beam-aware interpolation using BeamAltitudeManager
      */
     pcl::PointCloud<pcl::PointXYZI>::Ptr performSimpleInterpolation(
         const pcl::PointCloud<pcl::PointXYZI>::Ptr& input) {
         
-        int output_height = static_cast<int>(input->height * scale_factor_);
+        int output_height = beam_manager_->getOutputBeamCount();
         auto output = pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>);
         output->width = input->width;
         output->height = output_height;
         output->points.resize(output_height * input->width);
         output->is_dense = false;
         
+        // Get interpolated beam configuration
+        const auto& interpolated_beams = beam_manager_->getInterpolatedBeams();
+        
         // Process each column independently (azimuth angle)
         #pragma omp parallel for schedule(dynamic, 32)
         for (size_t col = 0; col < input->width; ++col) {
-            // Step 1: Copy original points to their positions
-            for (size_t row = 0; row < input->height; ++row) {
-                size_t input_idx = row * input->width + col;
-                size_t output_row = static_cast<size_t>(row * scale_factor_);
-                size_t output_idx = output_row * input->width + col;
+            // Process each output beam using beam configuration
+            for (size_t out_row = 0; out_row < static_cast<size_t>(output_height); ++out_row) {
+                const auto& interp_beam = interpolated_beams[out_row];
+                size_t output_idx = out_row * input->width + col;
                 
-                // Copy original point
-                output->points[output_idx] = input->points[input_idx];
-            }
-            
-            // Step 2: Interpolate between adjacent points
-            for (size_t row = 0; row < input->height - 1; ++row) {
-                size_t idx1 = row * input->width + col;
-                size_t idx2 = (row + 1) * input->width + col;
-                const auto& p1 = input->points[idx1];
-                const auto& p2 = input->points[idx2];
-                
-                // Check if points are valid
-                if (!std::isfinite(p1.x) || !std::isfinite(p2.x)) {
-                    continue;
-                }
-                
-                // Calculate distances for discontinuity check
-                float r1 = std::sqrt(p1.x*p1.x + p1.y*p1.y + p1.z*p1.z);
-                float r2 = std::sqrt(p2.x*p2.x + p2.y*p2.y + p2.z*p2.z);
-                
-                // Check for discontinuity
-                bool is_discontinuous = std::abs(r2 - r1) > discontinuity_threshold_;
-                
-                // Generate interpolated points
-                size_t base_output_row = static_cast<size_t>(row * scale_factor_);
-                for (int i = 1; i < static_cast<int>(scale_factor_); ++i) {
-                    float t = static_cast<float>(i) / scale_factor_;
-                    size_t interp_row = base_output_row + i;
+                if (interp_beam.is_original) {
+                    // This is an original beam, copy directly
+                    size_t input_row = interp_beam.source_beam_low;
+                    if (input_row < input->height) {
+                        size_t input_idx = input_row * input->width + col;
+                        output->points[output_idx] = input->points[input_idx];
+                    }
+                } else {
+                    // This is an interpolated beam
+                    size_t low_row = interp_beam.source_beam_low;
+                    size_t high_row = interp_beam.source_beam_high;
                     
-                    if (interp_row >= static_cast<size_t>(output_height)) {
-                        break;
+                    if (low_row >= input->height || high_row >= input->height) {
+                        // Invalid beam indices, set as invalid point
+                        output->points[output_idx].x = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].y = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].z = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].intensity = 0;
+                        continue;
                     }
                     
-                    size_t interp_idx = interp_row * input->width + col;
+                    size_t idx1 = low_row * input->width + col;
+                    size_t idx2 = high_row * input->width + col;
+                    const auto& p1 = input->points[idx1];
+                    const auto& p2 = input->points[idx2];
+                    
+                    // Check if points are valid
+                    if (!std::isfinite(p1.x) || !std::isfinite(p2.x)) {
+                        output->points[output_idx].x = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].y = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].z = std::numeric_limits<float>::quiet_NaN();
+                        output->points[output_idx].intensity = 0;
+                        continue;
+                    }
+                    
+                    // Calculate distances for discontinuity check
+                    float r1 = std::sqrt(p1.x*p1.x + p1.y*p1.y + p1.z*p1.z);
+                    float r2 = std::sqrt(p2.x*p2.x + p2.y*p2.y + p2.z*p2.z);
+                    
+                    // Check for discontinuity
+                    bool is_discontinuous = std::abs(r2 - r1) > discontinuity_threshold_;
                     
                     if (is_discontinuous) {
-                        // For discontinuity: use nearest neighbor
-                        if (t < 0.5f) {
-                            output->points[interp_idx] = p1;
+                        // For discontinuity: use nearest neighbor based on interpolation weight
+                        if (interp_beam.interpolation_weight < 0.5f) {
+                            output->points[output_idx] = p1;
                         } else {
-                            output->points[interp_idx] = p2;
+                            output->points[output_idx] = p2;
                         }
                     } else {
-                        // For continuous regions: linear interpolation
-                        output->points[interp_idx].x = p1.x * (1.0f - t) + p2.x * t;
-                        output->points[interp_idx].y = p1.y * (1.0f - t) + p2.y * t;
-                        output->points[interp_idx].z = p1.z * (1.0f - t) + p2.z * t;
-                        output->points[interp_idx].intensity = p1.intensity * (1.0f - t) + p2.intensity * t;
+                        // For continuous regions: use beam-aware interpolation weight
+                        float w = interp_beam.interpolation_weight;
+                        output->points[output_idx].x = p1.x * (1.0f - w) + p2.x * w;
+                        output->points[output_idx].y = p1.y * (1.0f - w) + p2.y * w;
+                        output->points[output_idx].z = p1.z * (1.0f - w) + p2.z * w;
+                        output->points[output_idx].intensity = p1.intensity * (1.0f - w) + p2.intensity * w;
                     }
                 }
             }
@@ -245,7 +283,7 @@ private:
             double fps = 1000.0 / avg_time;
             
             RCLCPP_INFO(this->get_logger(), 
-                "=== PRISM Interpolation Statistics (OpenMP) ===");
+                "=== PRISM Interpolation Statistics (BeamHandler) ===");
             RCLCPP_INFO(this->get_logger(), 
                 "Frames processed: %ld", frame_count_.load());
             RCLCPP_INFO(this->get_logger(), 
@@ -265,6 +303,9 @@ private:
     std::string interpolation_method_;
     int input_channels_;
     int output_channels_;
+    
+    // BeamHandler components
+    std::unique_ptr<interpolation::BeamAltitudeManager> beam_manager_;
     
     // ROS2 communication
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
