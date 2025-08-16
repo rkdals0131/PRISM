@@ -126,7 +126,7 @@ InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& 
         }
         
         // Process beams for interpolation (parallel if enabled and beneficial)
-        result.beams_processed = beam_groups.size();
+        result.beams_processed = output_channels;
         result.points_per_beam.reserve(output_channels);
         result.beam_altitudes.reserve(output_channels);
         

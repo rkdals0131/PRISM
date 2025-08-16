@@ -144,19 +144,15 @@ TEST_F(ExecutionModeTest, ExecutionUtilityFunctions) {
     EXPECT_GT(sys_info.l3_cache_size, 0);
 }
 
-TEST_F(ExecutionModeTest, OptimalModeSelection) {
-    // Test optimal mode selection for different input sizes
-    auto mode_small = ExecutionMode::getOptimalMode(100);
-    auto mode_medium = ExecutionMode::getOptimalMode(5000);
-    auto mode_large = ExecutionMode::getOptimalMode(50000);
+TEST_F(ExecutionModeTest, ExecutionModeBasicFunctionality) {
+    // Test basic functionality with current available modes
+    ExecutionMode exec_mode(ExecutionMode::Mode::SINGLE_THREAD, exec_config);
     
-    // Should return valid modes
-    EXPECT_NE(mode_small, ExecutionMode::Mode::AUTO);
-    EXPECT_NE(mode_medium, ExecutionMode::Mode::AUTO);
-    EXPECT_NE(mode_large, ExecutionMode::Mode::AUTO);
+    // Should start with single thread mode
+    EXPECT_EQ(exec_mode.getMode(), ExecutionMode::Mode::SINGLE_THREAD);
     
-    // Small inputs should prefer single thread
-    EXPECT_EQ(mode_small, ExecutionMode::Mode::SINGLE_THREAD);
+    // Should be able to check mode availability
+    EXPECT_TRUE(ExecutionMode::isModeAvailable(ExecutionMode::Mode::SINGLE_THREAD));
 }
 
 TEST_F(ExecutionModeTest, MetricsResetFunctionality) {

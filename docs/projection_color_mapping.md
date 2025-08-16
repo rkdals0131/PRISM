@@ -1,8 +1,8 @@
-# PRISM Projection and Color Mapping Guide
+# PRISM - 투영 및 컬러 매핑 가이드
 
-## Overview
+## 1. 개요
 
-This document provides comprehensive technical documentation for camera-LiDAR coordinate transformation and color mapping in the PRISM system. The implementation builds upon the proven CALICO projection utilities, extending them for multi-camera fusion, advanced distortion correction, and high-performance color extraction with sub-pixel accuracy.
+이 문서는 PRISM 패키지의 Phase 3 (투영 엔진) 및 Phase 4 (색상 추출 및 융합) 구현을 위한 상세 가이드입니다. CALICO 프로젝트의 검증된 로직을 기반으로 듀얼 카메라 시스템의 LiDAR-카메라 융합을 구현합니다.
 
 ## Analysis of CALICO Projection System
 

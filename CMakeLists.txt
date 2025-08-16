@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ROS2 dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -47,7 +48,7 @@ include_directories(
 # Add PCL definitions
 add_definitions(${PCL_DEFINITIONS})
 
-# Core library - Phase 1 & 2 components
+# Core library - Phase 1, 2 & 3 components
 add_library(${PROJECT_NAME}_core SHARED
   src/core/point_cloud_soa.cpp
   src/core/memory_pool.cpp
@@ -58,8 +59,9 @@ add_library(${PROJECT_NAME}_core SHARED
   src/interpolation/catmull_rom_interpolator.cpp
   src/interpolation/simd_kernels.cpp
   src/interpolation/beam_altitude_manager.cpp
-  # Future Phase 2+ components:
-  # src/projection/projection_manager.cpp
+  # Phase 3 projection components
+  src/projection/projection_engine.cpp
+  # Future Phase 4+ components:
   # src/fusion/prism_fusion.cpp
 )
 
@@ -89,6 +91,30 @@ ament_target_dependencies(prism_interpolation_node
   sensor_msgs
   pcl_conversions
   pcl_ros
+)
+
+# Phase 3 Projection Debug Node
+add_executable(prism_projection_debug_node
+  src/nodes/projection_debug_node.cpp
+)
+
+target_link_libraries(prism_projection_debug_node
+  ${PROJECT_NAME}_core
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${rclcpp_LIBRARIES}
+  OpenMP::OpenMP_CXX
+)
+
+ament_target_dependencies(prism_projection_debug_node
+  rclcpp
+  sensor_msgs
+  std_msgs
+  cv_bridge
+  image_transport
+  pcl_conversions
+  pcl_ros
+  rclcpp_components
 )
 
 # Phase 5 Fusion Node (will be added later)
@@ -123,6 +149,7 @@ install(TARGETS
 
 install(TARGETS
   prism_interpolation_node
+  prism_projection_debug_node
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -172,6 +199,24 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_interpolation_engine
     ${PROJECT_NAME}_core
+  )
+  
+  # Phase 3 Projection tests
+  ament_add_gtest(test_projection_engine
+    test/unit/test_projection_engine.cpp
+  )
+  target_link_libraries(test_projection_engine
+    ${PROJECT_NAME}_core
+  )
+  
+  # Simple projection test without full engine
+  ament_add_gtest(test_simple_projection
+    test/unit/test_simple_projection.cpp
+  )
+  target_link_libraries(test_simple_projection
+    ${PROJECT_NAME}_core
+    ${OpenCV_LIBRARIES}
+    Eigen3::Eigen
   )
   
   # Phase 2+ Unit tests (will be added in later phases)

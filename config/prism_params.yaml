@@ -1,5 +1,36 @@
 # PRISM Node Parameters Configuration
 
+# Phase 3: Projection Debug Node Parameters
+prism_projection_debug_node:
+  ros__parameters:
+    # Camera configuration - 실제 카메라 ID와 매칭
+    camera_ids: ["usb_cam_1", "usb_cam_2"]
+    
+    # Topic configuration
+    lidar_topic: "/ouster/points"
+    output_topic_prefix: "/prism/projection_debug"
+    
+    # Calibration directory
+    calibration_directory: "./config"
+    
+    # Synchronization
+    time_tolerance_sec: 0.1
+    enable_time_sync: true
+    
+    # Visualization parameters
+    enable_status_overlay: true
+    point_radius: 3
+    overlay_alpha: 0.8
+    
+    # Projection configuration
+    projection:
+      min_depth: 0.5        # 최소 거리 (m)
+      max_depth: 50.0       # 최대 거리 (m)
+      margin_pixels: 5      # 이미지 경계 마진
+      enable_frustum_culling: true       # 카메라 뒤 포인트 제거
+      enable_distortion_correction: true # 왜곡 보정 적용
+      enable_debug_visualization: true   # 디버그 시각화 활성화
+
 # Phase 2: Interpolation Node Parameters (Simplified)
 prism_interpolation_node:
   ros__parameters:
