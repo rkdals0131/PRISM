@@ -7,14 +7,6 @@
 #include <chrono>
 #include <cmath>
 
-#ifdef PRISM_ENABLE_TBB
-#include <tbb/parallel_for.h>
-#include <tbb/blocked_range.h>
-#endif
-
-#ifdef __x86_64__
-#include <immintrin.h>  // For SIMD intrinsics
-#endif
 
 namespace prism {
 namespace interpolation {
@@ -69,11 +61,11 @@ struct SplineSegment {
     // Batch interpolate multiple t values
     void interpolateBatch(const float* t_values, ControlPoint* results, size_t count) const;
     
-    // Cached coefficient matrices for efficient computation (public for SIMD access)
-    alignas(32) float coeff_x_[4];  // x coefficients
-    alignas(32) float coeff_y_[4];  // y coefficients
-    alignas(32) float coeff_z_[4];  // z coefficients
-    alignas(32) float coeff_i_[4];  // intensity coefficients
+    // Cached coefficient matrices for efficient computation
+    float coeff_x_[4];  // x coefficients
+    float coeff_y_[4];  // y coefficients
+    float coeff_z_[4];  // z coefficients
+    float coeff_i_[4];  // intensity coefficients
     bool coefficients_valid_ = false;
 };
 
@@ -83,14 +75,8 @@ struct SplineSegment {
 struct CatmullRomConfig {
     float tension = 0.5f;                    // Spline tension (0-1)
     float discontinuity_threshold = 0.1f;    // Distance threshold for discontinuities
-    bool enable_simd = true;                 // Enable SIMD optimizations
     bool normalize_parameters = true;        // Normalize t parameters by arc length
     size_t max_points_per_segment = 100;     // Maximum points to interpolate per segment
-    
-    // TBB parallelization parameters
-    bool enable_tbb = true;                  // Enable TBB parallel processing
-    size_t grain_size = 32;                  // TBB grain size for segment processing
-    size_t min_segments_for_parallel = 4;    // Minimum segments to justify parallelization
 };
 
 /**
@@ -100,21 +86,13 @@ struct CatmullRomStats {
     size_t segments_processed = 0;
     size_t points_interpolated = 0;
     size_t discontinuities_detected = 0;
-    size_t simd_operations = 0;
     std::chrono::nanoseconds computation_time{0};
-    
-    // TBB specific metrics
-    size_t parallel_segments_processed = 0;
-    std::chrono::nanoseconds parallel_computation_time{0};
     
     void reset() {
         segments_processed = 0;
         points_interpolated = 0;
         discontinuities_detected = 0;
-        simd_operations = 0;
         computation_time = std::chrono::nanoseconds{0};
-        parallel_segments_processed = 0;
-        parallel_computation_time = std::chrono::nanoseconds{0};
     }
 };
 
@@ -128,7 +106,6 @@ struct CatmullRomStats {
  * Features:
  * - Cubic Catmull-Rom spline interpolation
  * - Discontinuity detection and handling
- * - SIMD optimization for batch processing
  * - Arc-length parameterization for smooth interpolation
  * - Memory-efficient segment-based processing
  */
@@ -220,17 +197,6 @@ public:
      */
     void resetStats();
     
-    /**
-     * @brief Check if SIMD optimizations are available
-     * @return True if SIMD is supported and enabled
-     */
-    bool isSIMDAvailable() const noexcept;
-    
-    /**
-     * @brief Check if TBB parallelization is available
-     * @return True if TBB is supported and enabled
-     */
-    bool isTBBAvailable() const noexcept;
     
     /**
      * @brief Validate control points for interpolation
@@ -249,16 +215,6 @@ private:
     bool buildSegments(const std::vector<ControlPoint>& control_points,
                       std::vector<SplineSegment>& segments) const;
     
-    /**
-     * @brief Process segments in parallel using TBB
-     * @param segments Spline segments to process
-     * @param num_interpolated Number of points per segment
-     * @param output Output vector for all interpolated points
-     * @return True if processing succeeded
-     */
-    bool processSegmentsParallel(const std::vector<SplineSegment>& segments,
-                                size_t num_interpolated,
-                                std::vector<ControlPoint>& output);
     
     /**
      * @brief Calculate arc-length parameterization
@@ -270,20 +226,9 @@ private:
                                           size_t num_points,
                                           std::vector<float>& t_values) const;
     
-    /**
-     * @brief SIMD-optimized batch interpolation
-     * @param segment Spline segment
-     * @param t_values Parameter values
-     * @param output Output points
-     * @param count Number of points to interpolate
-     */
-    void interpolateBatchSIMD(const SplineSegment& segment,
-                            const float* t_values,
-                            ControlPoint* output,
-                            size_t count) const;
     
     /**
-     * @brief Standard batch interpolation (fallback)
+     * @brief Standard batch interpolation
      * @param segment Spline segment
      * @param t_values Parameter values
      * @param output Output points
@@ -302,15 +247,6 @@ private:
      */
     bool isDiscontinuity(const ControlPoint& p1, const ControlPoint& p2) const;
     
-    /**
-     * @brief Initialize SIMD capabilities
-     */
-    void initializeSIMD();
-    
-    /**
-     * @brief Initialize TBB capabilities
-     */
-    void initializeTBB();
     
     /**
      * @brief Calculate Catmull-Rom basis functions
@@ -335,13 +271,6 @@ private:
     // Statistics
     mutable CatmullRomStats stats_;
     
-    // SIMD capabilities
-    bool simd_available_;
-    bool avx2_supported_;
-    bool sse_supported_;
-    
-    // TBB capabilities
-    bool tbb_available_;
     
     // Note: Removed temp_t_values_, temp_points_, temp_segments_ member variables
     // to ensure thread safety. These are now local variables in each method.

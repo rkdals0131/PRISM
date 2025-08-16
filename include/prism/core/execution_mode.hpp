@@ -13,12 +13,6 @@
 #include "point_cloud_soa.hpp"
 #include "memory_pool.hpp"
 
-// Forward declarations for opaque pointers
-namespace prism { namespace core { namespace tbb_impl {
-    struct TBBArena;
-    struct TBBControl;
-}}}
-
 namespace prism {
 namespace core {
 
@@ -63,21 +57,11 @@ using PipelineStage = std::function<PooledPtr<PointCloudSoA>(const PointCloudSoA
  * @brief Configuration for execution modes
  */
 struct ExecutionConfig {
-    // Thread pool configuration
-    size_t num_threads{std::thread::hardware_concurrency()};
-    
-    // SIMD configuration
-    bool enable_avx2{true};
-    bool enable_sse{true};
-    
     // Memory pool integration
     MemoryPool<PointCloudSoA>* memory_pool{nullptr};
     
     // Performance monitoring
     bool enable_metrics{true};
-    
-    // Batch processing configuration
-    size_t batch_size{1000}; // Points per batch for parallel processing
     
     // Timeout configuration
     std::chrono::milliseconds stage_timeout{5000};
@@ -87,10 +71,7 @@ struct ExecutionConfig {
  * @brief Abstract base class for execution strategies
  * 
  * Implements the Strategy pattern for different processing pipelines.
- * Each strategy provides different execution characteristics:
- * - Sequential vs Parallel processing
- * - SIMD optimization levels
- * - Memory management approaches
+ * Currently supports only sequential single-threaded processing for simplicity.
  */
 class ExecutionStrategy {
 public:
@@ -168,80 +149,6 @@ public:
     bool isAvailable() const override { return true; }
 };
 
-/**
- * @brief Multi-threaded CPU parallel execution strategy
- * 
- * Uses Intel TBB (Threading Building Blocks) for parallel processing.
- * Suitable for large point clouds that can be processed in parallel batches.
- */
-class CPUParallelPipeline : public ExecutionStrategy {
-public:
-    explicit CPUParallelPipeline(const ExecutionConfig& config = ExecutionConfig());
-    ~CPUParallelPipeline();
-    
-    PooledPtr<PointCloudSoA> execute(
-        const PointCloudSoA& input,
-        const PipelineStage& interpolation_stage,
-        const PipelineStage& projection_stage,
-        const PipelineStage& fusion_stage) override;
-    
-    const PipelineMetrics& getMetrics() const override;
-    void resetMetrics() override;
-    const char* getName() const override { return "CPUParallelPipeline"; }
-    void configure(const ExecutionConfig& config) override;
-    bool isAvailable() const override;
-
-private:
-    // Use opaque pointers to avoid TBB header dependencies
-    std::unique_ptr<tbb_impl::TBBArena> task_arena_;
-    std::unique_ptr<tbb_impl::TBBControl> thread_control_;
-    
-    /**
-     * @brief Execute stage in parallel batches
-     */
-    PooledPtr<PointCloudSoA> executeStageParallel(
-        const PointCloudSoA& input,
-        const PipelineStage& stage) const;
-};
-
-/**
- * @brief SIMD-optimized execution strategy
- * 
- * Uses vectorized operations (AVX2/SSE) for mathematical computations.
- * Optimized for point cloud transformations and filtering operations.
- */
-class SIMDPipeline : public ExecutionStrategy {
-public:
-    explicit SIMDPipeline(const ExecutionConfig& config = ExecutionConfig());
-    
-    PooledPtr<PointCloudSoA> execute(
-        const PointCloudSoA& input,
-        const PipelineStage& interpolation_stage,
-        const PipelineStage& projection_stage,
-        const PipelineStage& fusion_stage) override;
-    
-    const PipelineMetrics& getMetrics() const override;
-    void resetMetrics() override;
-    const char* getName() const override { return "SIMDPipeline"; }
-    void configure(const ExecutionConfig& config) override;
-    bool isAvailable() const override;
-
-private:
-    bool avx2_available_{false};
-    bool sse_available_{false};
-    
-    /**
-     * @brief Execute stage with SIMD optimizations
-     */
-    PooledPtr<PointCloudSoA> executeStageVectorized(
-        const PointCloudSoA& input,
-        const PipelineStage& stage) const;
-    
-    /**
-     * @brief Check CPU features at runtime
-     */
-    void detectSIMDFeatures();
-};
 
 /**
  * @brief Execution mode manager and factory
@@ -255,16 +162,13 @@ public:
      * @brief Available execution modes
      */
     enum class Mode {
-        SINGLE_THREAD,   ///< Sequential single-threaded processing
-        CPU_PARALLEL,    ///< Multi-threaded CPU processing with TBB
-        SIMD,           ///< SIMD-optimized processing
-        AUTO            ///< Automatic selection based on hardware and input size
+        SINGLE_THREAD   ///< Sequential single-threaded processing
     };
     
     /**
      * @brief Constructor with default mode
      */
-    explicit ExecutionMode(Mode mode = Mode::AUTO, 
+    explicit ExecutionMode(Mode mode = Mode::SINGLE_THREAD, 
                           const ExecutionConfig& config = ExecutionConfig());
     
     /**
@@ -311,10 +215,6 @@ public:
      */
     static bool isModeAvailable(Mode mode);
     
-    /**
-     * @brief Get optimal mode for given input size and hardware
-     */
-    static Mode getOptimalMode(size_t input_size);
 
 private:
     Mode current_mode_;
@@ -327,10 +227,6 @@ private:
      */
     std::unique_ptr<ExecutionStrategy> createStrategy(Mode mode);
     
-    /**
-     * @brief Automatically select best mode
-     */
-    Mode selectAutoMode(size_t input_size) const;
 };
 
 /**
@@ -352,8 +248,6 @@ namespace execution_utils {
      */
     struct SystemInfo {
         size_t num_cpu_cores;
-        bool avx2_supported;
-        bool sse_supported;
         size_t l3_cache_size;
     };
     

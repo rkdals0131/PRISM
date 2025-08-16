@@ -6,15 +6,6 @@
 #include <stdexcept>
 #include <mutex>
 
-#ifdef PRISM_ENABLE_TBB
-#include <tbb/parallel_for.h>
-#include <tbb/blocked_range.h>
-#endif
-
-#ifdef __x86_64__
-#include <cpuid.h>
-#include <immintrin.h>
-#endif
 
 namespace prism {
 namespace interpolation {
@@ -98,24 +89,15 @@ void SplineSegment::interpolateBatch(const float* t_values, ControlPoint* result
 // CatmullRomInterpolator implementation
 CatmullRomInterpolator::CatmullRomInterpolator(const CatmullRomConfig& config)
     : config_(config)
-    , simd_available_(false)
-    , avx2_supported_(false)
-    , sse_supported_(false)
-    , tbb_available_(false)
 {
-    initializeSIMD();
-    initializeTBB();
     resetStats();
     
-    // Initialize the SIMD kernel registry
-    SIMDKernelRegistry::initialize();
+    // Initialize the interpolation kernel registry
+    InterpolationKernelRegistry::initialize();
 }
 
 void CatmullRomInterpolator::configure(const CatmullRomConfig& config) {
     config_ = config;
-    if (config_.enable_simd && !simd_available_) {
-        config_.enable_simd = false; // Disable if not supported
-    }
 }
 
 bool CatmullRomInterpolator::interpolate(const std::vector<ControlPoint>& control_points,
@@ -138,23 +120,8 @@ bool CatmullRomInterpolator::interpolate(const std::vector<ControlPoint>& contro
         return false;
     }
     
-    // Process segments (parallel if enabled and beneficial)
-    if (config_.enable_tbb && tbb_available_ && 
-        local_segments.size() >= config_.min_segments_for_parallel) {
-        
-        auto parallel_start = std::chrono::high_resolution_clock::now();
-        
-        // Use parallel processing
-        if (!processSegmentsParallel(local_segments, num_interpolated, output)) {
-            return false;
-        }
-        
-        auto parallel_end = std::chrono::high_resolution_clock::now();
-        stats_.parallel_computation_time += std::chrono::duration_cast<std::chrono::nanoseconds>(parallel_end - parallel_start);
-        stats_.parallel_segments_processed = local_segments.size();
-        
-    } else {
-        // Use serial processing with local variables
+    // Use serial processing with local variables
+    {
         for (const auto& segment : local_segments) {
             // Calculate parameter values for interpolation
             std::vector<float> local_t_values;
@@ -172,12 +139,7 @@ bool CatmullRomInterpolator::interpolate(const std::vector<ControlPoint>& contro
             std::vector<ControlPoint> local_points;
             local_points.resize(local_t_values.size());
             
-            if (config_.enable_simd && simd_available_) {
-                interpolateBatchSIMD(segment, local_t_values.data(), local_points.data(), local_t_values.size());
-                stats_.simd_operations++;
-            } else {
-                interpolateBatchStandard(segment, local_t_values.data(), local_points.data(), local_t_values.size());
-            }
+            interpolateBatchStandard(segment, local_t_values.data(), local_points.data(), local_t_values.size());
             
             // Add interpolated points to output
             output.insert(output.end(), local_points.begin(), local_points.end());
@@ -258,12 +220,7 @@ bool CatmullRomInterpolator::interpolateSegment(const ControlPoint& p0, const Co
     output.clear();
     output.resize(num_points);
     
-    if (config_.enable_simd && simd_available_) {
-        interpolateBatchSIMD(segment, t_values.data(), output.data(), num_points);
-        stats_.simd_operations++;
-    } else {
-        interpolateBatchStandard(segment, t_values.data(), output.data(), num_points);
-    }
+    interpolateBatchStandard(segment, t_values.data(), output.data(), num_points);
     
     stats_.segments_processed++;
     stats_.points_interpolated += num_points;
@@ -390,13 +347,6 @@ void CatmullRomInterpolator::calculateArcLengthParameterization(const SplineSegm
     }
 }
 
-void CatmullRomInterpolator::interpolateBatchSIMD(const SplineSegment& segment,
-                                                const float* t_values,
-                                                ControlPoint* output,
-                                                size_t count) const {
-    // Use the optimized SIMD kernel registry
-    SIMDKernelRegistry::interpolateBatch(segment, t_values, output, count);
-}
 
 void CatmullRomInterpolator::interpolateBatchStandard(const SplineSegment& segment,
                                                     const float* t_values,
@@ -412,16 +362,6 @@ bool CatmullRomInterpolator::isDiscontinuity(const ControlPoint& p1, const Contr
     return distance > config_.discontinuity_threshold;
 }
 
-void CatmullRomInterpolator::initializeSIMD() {
-    // Initialize SIMD kernel registry which handles CPU feature detection
-    SIMDKernelRegistry::initialize();
-    
-    // Update local flags for compatibility
-    const auto& caps = SIMDKernelRegistry::getCapabilities();
-    sse_supported_ = caps.sse_available;
-    avx2_supported_ = caps.avx2_available;
-    simd_available_ = SIMDKernelRegistry::isAvailable();
-}
 
 float CatmullRomInterpolator::calculateDerivativeMagnitude(const SplineSegment& segment, float t) {
     if (!segment.valid || !segment.coefficients_valid_) {
@@ -446,13 +386,6 @@ void CatmullRomInterpolator::resetStats() {
     stats_.reset();
 }
 
-bool CatmullRomInterpolator::isSIMDAvailable() const noexcept {
-    return config_.enable_simd && simd_available_;
-}
-
-bool CatmullRomInterpolator::isTBBAvailable() const noexcept {
-    return config_.enable_tbb && tbb_available_;
-}
 
 // Utility functions
 namespace catmull_rom_utils {
@@ -534,111 +467,3 @@ void smoothControlPoints(std::vector<ControlPoint>& points, size_t window_size) 
 } // namespace interpolation
 } // namespace prism
 
-// Implementation of TBB-specific methods for CatmullRomInterpolator
-namespace prism {
-namespace interpolation {
-
-void CatmullRomInterpolator::initializeTBB() {
-#ifdef PRISM_ENABLE_TBB
-    try {
-        // TBB should be initialized by the InterpolationEngine
-        // Here we just check if it's available
-        tbb_available_ = true;
-    } catch (const std::exception&) {
-        tbb_available_ = false;
-    }
-#else
-    tbb_available_ = false;
-#endif
-}
-
-bool CatmullRomInterpolator::processSegmentsParallel(
-    const std::vector<SplineSegment>& segments,
-    size_t num_interpolated,
-    std::vector<ControlPoint>& output) {
-    
-#ifdef PRISM_ENABLE_TBB
-    if (!tbb_available_) {
-        return false;
-    }
-    
-    // Clear output and estimate size
-    output.clear();
-    size_t estimated_size = segments.size() * num_interpolated;
-    output.reserve(estimated_size);
-    
-    // Create a vector to store results from each segment
-    std::vector<std::vector<ControlPoint>> segment_results(segments.size());
-    
-    // Mutex for thread-safe statistics updates
-    std::mutex stats_mutex;
-    
-    try {
-        tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, segments.size(), config_.grain_size),
-            [&](const tbb::blocked_range<size_t>& range) {
-                size_t local_simd_ops = 0;
-                size_t local_points = 0;
-                
-                for (size_t seg_idx = range.begin(); seg_idx != range.end(); ++seg_idx) {
-                    const auto& segment = segments[seg_idx];
-                    
-                    // Calculate parameter values for interpolation
-                    std::vector<float> local_t_values;
-                    if (config_.normalize_parameters) {
-                        calculateArcLengthParameterization(segment, num_interpolated, local_t_values);
-                    } else {
-                        // Uniform parameterization
-                        local_t_values.reserve(num_interpolated);
-                        for (size_t i = 0; i < num_interpolated; ++i) {
-                            local_t_values.push_back(static_cast<float>(i) / (num_interpolated - 1));
-                        }
-                    }
-                    
-                    // Interpolate points for this segment
-                    std::vector<ControlPoint> local_points_vec;
-                    local_points_vec.resize(local_t_values.size());
-                    
-                    if (config_.enable_simd && simd_available_) {
-                        interpolateBatchSIMD(segment, local_t_values.data(), local_points_vec.data(), local_t_values.size());
-                        local_simd_ops++;
-                    } else {
-                        interpolateBatchStandard(segment, local_t_values.data(), local_points_vec.data(), local_t_values.size());
-                    }
-                    
-                    // Store results for this segment
-                    segment_results[seg_idx] = std::move(local_points_vec);
-                    local_points += segment_results[seg_idx].size();
-                }
-                
-                // Update statistics in a thread-safe manner
-                {
-                    std::lock_guard<std::mutex> lock(stats_mutex);
-                    stats_.simd_operations += local_simd_ops;
-                    stats_.points_interpolated += local_points;
-                }
-            }
-        );
-        
-        // Merge all segment results into the final output
-        for (const auto& segment_points : segment_results) {
-            output.insert(output.end(), segment_points.begin(), segment_points.end());
-        }
-        
-        return true;
-        
-    } catch (const std::exception&) {
-        return false;
-    }
-    
-#else
-    // Fallback when TBB is not available
-    (void)segments;
-    (void)num_interpolated;
-    (void)output;
-    return false;
-#endif
-}
-
-} // namespace interpolation
-} // namespace prism

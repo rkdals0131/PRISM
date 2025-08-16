@@ -11,11 +11,6 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   endif()
 endif()
 
-# Optional TBB support for parallel execution
-option(PRISM_ENABLE_TBB "Enable Intel TBB for parallel processing" ON)
-if(PRISM_ENABLE_TBB)
-  add_compile_definitions(PRISM_ENABLE_TBB)
-endif()
 
 # C++17 requirement for advanced features
 set(CMAKE_CXX_STANDARD 17)
@@ -39,7 +34,6 @@ find_package(message_filters REQUIRED)
 find_package(PCL 1.10 REQUIRED COMPONENTS common io kdtree search filters)
 find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc calib3d)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
-find_package(TBB REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
@@ -73,40 +67,9 @@ target_link_libraries(${PROJECT_NAME}_core
   ${PCL_LIBRARIES}
   ${OpenCV_LIBRARIES}
   Eigen3::Eigen
-  TBB::tbb
   yaml-cpp
 )
 
-# Enable SIMD optimizations for simd_kernels.cpp only
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  # Check for x86_64 architecture for SIMD support
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
-    # Set SIMD flags for the SIMD kernels file specifically
-    set_source_files_properties(src/interpolation/simd_kernels.cpp
-      PROPERTIES COMPILE_FLAGS "-msse -msse2 -mavx -mavx2 -mfma"
-    )
-    
-    # Add general SIMD availability definition (no specific instruction set flags)
-    target_compile_definitions(${PROJECT_NAME}_core PRIVATE
-      PRISM_SIMD_AVAILABLE=1
-    )
-    
-    # Add TBB definition if enabled
-    if(PRISM_ENABLE_TBB)
-      target_compile_definitions(${PROJECT_NAME}_core PRIVATE PRISM_ENABLE_TBB)
-    endif()
-  else()
-    # For non-x86 architectures, disable SIMD
-    target_compile_definitions(${PROJECT_NAME}_core PRIVATE
-      PRISM_SIMD_AVAILABLE=0
-    )
-    
-    # Add TBB definition if enabled
-    if(PRISM_ENABLE_TBB)
-      target_compile_definitions(${PROJECT_NAME}_core PRIVATE PRISM_ENABLE_TBB)
-    endif()
-  endif()
-endif()
 
 # Node executables
 # Phase 2 Interpolation Node
@@ -203,19 +166,13 @@ if(BUILD_TESTING)
     ${PROJECT_NAME}_core
   )
   
-  # Phase 2 Interpolation tests with TBB support
+  # Phase 2 Interpolation tests
   ament_add_gtest(test_interpolation_engine
     test/unit/test_interpolation_engine.cpp
   )
   target_link_libraries(test_interpolation_engine
     ${PROJECT_NAME}_core
-    TBB::tbb
   )
-  
-  # Add TBB compile definition for the test
-  if(PRISM_ENABLE_TBB)
-    target_compile_definitions(test_interpolation_engine PRIVATE PRISM_ENABLE_TBB)
-  endif()
   
   # Phase 2+ Unit tests (will be added in later phases)
   # ament_add_gtest(test_point_cloud_soa

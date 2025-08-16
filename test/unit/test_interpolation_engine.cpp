@@ -26,13 +26,8 @@ protected:
         // Create a basic configuration
         config_.input_channels = 32;
         config_.output_channels = 96;
-        config_.enable_simd = true;
-        config_.enable_tbb = true;
-        config_.grain_size = 64;
-        config_.min_columns_for_parallel = 8;
         config_.spline_tension = 0.5f;
         config_.discontinuity_threshold = 0.1f;
-        config_.batch_size = 1000;
         
         // Create memory pool for testing
         core::MemoryPool<core::PointCloudSoA>::Config pool_config;
@@ -119,71 +114,18 @@ TEST_F(InterpolationEngineTest, BasicConstruction) {
         InterpolationEngine engine(config_);
         EXPECT_EQ(engine.getConfig().input_channels, 32);
         EXPECT_EQ(engine.getConfig().output_channels, 96);
-        EXPECT_TRUE(engine.getConfig().enable_tbb);
-        EXPECT_EQ(engine.getConfig().grain_size, 64);
         std::cout << "Basic construction test passed" << std::endl;
     });
 }
 
-/**
- * @brief Test TBB availability detection
- */
-TEST_F(InterpolationEngineTest, TBBAvailability) {
-    InterpolationEngine engine(config_);
-    
-    // TBB should be available if compiled with support
-#ifdef PRISM_ENABLE_TBB
-    EXPECT_TRUE(engine.isTBBAvailable());
-    std::cout << "TBB is available" << std::endl;
-#else
-    EXPECT_FALSE(engine.isTBBAvailable());
-    std::cout << "TBB is not available" << std::endl;
-#endif
-}
 
-/**
- * @brief Test basic TBB functionality without interpolation
- */
-TEST_F(InterpolationEngineTest, BasicTBBFunctionality) {
-#ifdef PRISM_ENABLE_TBB
-    std::cout << "Testing basic TBB functionality..." << std::endl;
-    
-    try {
-        // Test basic TBB parallel_for
-        std::vector<int> data(1000, 0);
-        
-        tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, data.size(), 64),
-            [&](const tbb::blocked_range<size_t>& range) {
-                for (size_t i = range.begin(); i != range.end(); ++i) {
-                    data[i] = static_cast<int>(i);
-                }
-            }
-        );
-        
-        // Verify results
-        for (size_t i = 0; i < data.size(); ++i) {
-            EXPECT_EQ(data[i], static_cast<int>(i));
-        }
-        
-        std::cout << "Basic TBB test passed" << std::endl;
-        
-    } catch (const std::exception& e) {
-        std::cout << "TBB test failed: " << e.what() << std::endl;
-        FAIL() << "TBB basic functionality test failed: " << e.what();
-    }
-#else
-    std::cout << "TBB not available, skipping basic functionality test" << std::endl;
-#endif
-}
 
 /**
  * @brief Test interpolation with small point cloud (serial processing)
  */
 TEST_F(InterpolationEngineTest, DISABLED_SmallPointCloudInterpolation) {
-    // DISABLED for now to isolate TBB functionality
-    // Force serial processing by setting min_columns_for_parallel high
-    config_.min_columns_for_parallel = 200;
+    // DISABLED for now to isolate functionality
+    // Single thread processing
     
     try {
         InterpolationEngine engine(config_);
@@ -388,45 +330,10 @@ TEST_F(InterpolationEngineTest, DISABLED_GrainSizeOptimization) {
 /**
  * @brief Test thread scaling behavior
  */
+// TBB-related test removed
 TEST_F(InterpolationEngineTest, DISABLED_ThreadScaling) {
-    if (!config_.enable_tbb) return;
-    
-    auto input_cloud = generateRealisticPointCloud(2048, 32); // Larger dataset
-    size_t max_threads = std::thread::hardware_concurrency();
-    
-    std::cout << "\nThread Scaling Results:\n";
-    std::cout << "Threads | Time (ms) | Speedup | Efficiency\n";
-    std::cout << "--------|-----------|---------|----------\n";
-    
-    double baseline_time = 0.0;
-    
-    for (size_t num_threads = 1; num_threads <= max_threads; ++num_threads) {
-        config_.max_threads = num_threads;
-        InterpolationEngine engine(config_);
-        
-        if (!engine.isTBBAvailable()) continue;
-        
-        auto start = std::chrono::high_resolution_clock::now();
-        auto result = engine.interpolate(input_cloud);
-        auto end = std::chrono::high_resolution_clock::now();
-        
-        ASSERT_TRUE(result.success);
-        
-        auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start);
-        double time_ms = duration.count() / 1e6;
-        
-        if (num_threads == 1) {
-            baseline_time = time_ms;
-        }
-        
-        double speedup = baseline_time / time_ms;
-        double efficiency = speedup / num_threads;
-        
-        std::cout << std::setw(7) << num_threads << " | ";
-        std::cout << std::setw(9) << std::fixed << std::setprecision(2) << time_ms << " | ";
-        std::cout << std::setw(7) << std::fixed << std::setprecision(2) << speedup << " | ";
-        std::cout << std::setw(8) << std::fixed << std::setprecision(2) << efficiency << "\n";
-    }
+    // This test has been disabled as TBB support was removed
+    GTEST_SKIP() << "TBB support has been removed from the engine";
 }
 
 /**
@@ -435,37 +342,16 @@ TEST_F(InterpolationEngineTest, DISABLED_ThreadScaling) {
 TEST_F(InterpolationEngineTest, ParallelSerialCorrectnessComparison) {
     auto input_cloud = generateRealisticPointCloud(512, 16); // Smaller for exact comparison
     
-    // Serial processing
-    config_.enable_tbb = false;
+    // Single thread processing
     InterpolationEngine serial_engine(config_);
     auto serial_result = serial_engine.interpolate(input_cloud);
     ASSERT_TRUE(serial_result.success);
     
-    // Parallel processing
-    config_.enable_tbb = true;
-    InterpolationEngine parallel_engine(config_);
-    
-    if (parallel_engine.isTBBAvailable()) {
-        auto parallel_result = parallel_engine.interpolate(input_cloud);
-        ASSERT_TRUE(parallel_result.success);
-        
-        // Compare sizes first
-        EXPECT_EQ(serial_result.interpolated_cloud->size(), parallel_result.interpolated_cloud->size());
-        
-        // Note: Parallel processing may produce points in a different order than serial
-        // due to thread scheduling. This is expected behavior and not a bug.
-        // For production use, the order of points doesn't matter as long as all points
-        // are correctly interpolated. 
-        
-        // We could implement a more sophisticated comparison here that sorts points
-        // by their spatial location or ring ID before comparing, but for now we'll
-        // just verify that both methods produce the same number of points.
-        
-        // Verify that both results have valid data
-        EXPECT_GT(serial_result.interpolated_cloud->size(), 0);
-        EXPECT_EQ(serial_result.beams_processed, parallel_result.beams_processed);
-        EXPECT_EQ(serial_result.points_per_beam.size(), parallel_result.points_per_beam.size());
-    }
+    // Verify basic output properties
+    EXPECT_GT(serial_result.interpolated_cloud->size(), 0);
+    EXPECT_EQ(serial_result.beams_processed, config_.output_channels);
+    EXPECT_EQ(serial_result.points_per_beam.size(), config_.output_channels);
+    EXPECT_EQ(serial_result.beam_altitudes.size(), config_.output_channels);
 }
 
 /**
@@ -503,11 +389,8 @@ TEST_F(InterpolationEngineTest, MetricsCollection) {
     EXPECT_GT(metrics.output_points, 0);
     EXPECT_GT(metrics.throughput_points_per_second, 0);
     
-    // Verify TBB-specific metrics if available
-    if (engine.isTBBAvailable() && config_.enable_tbb) {
-        EXPECT_GT(metrics.threads_used, 0);
-        EXPECT_GE(metrics.parallel_efficiency, 0.0);
-    }
+    // Verify interpolation ratio
+    EXPECT_GT(metrics.interpolation_ratio, 0.0);
 }
 
 } // namespace test
@@ -520,14 +403,8 @@ TEST_F(InterpolationEngineTest, MetricsCollection) {
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     
-    std::cout << "Running InterpolationEngine TBB Tests\n";
+    std::cout << "Running InterpolationEngine Tests\n";
     std::cout << "Hardware concurrency: " << std::thread::hardware_concurrency() << " threads\n";
-    
-#ifdef PRISM_ENABLE_TBB
-    std::cout << "TBB support: ENABLED\n";
-#else
-    std::cout << "TBB support: DISABLED\n";
-#endif
     
     std::cout << "========================================\n\n";
     

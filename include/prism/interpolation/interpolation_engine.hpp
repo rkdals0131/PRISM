@@ -7,12 +7,6 @@
 #include <functional>
 #include <chrono>
 
-#ifdef PRISM_ENABLE_TBB
-#include <tbb/parallel_for.h>
-#include <tbb/blocked_range.h>
-#include <tbb/task_arena.h>
-#include <tbb/global_control.h>
-#endif
 
 #include "prism/core/point_cloud_soa.hpp"
 #include "prism/core/memory_pool.hpp"
@@ -36,21 +30,11 @@ struct InterpolationConfig {
     bool enable_discontinuity_detection = true;
     float discontinuity_threshold = 0.1f;  // Threshold for detecting discontinuities
     
-    // Performance parameters
-    bool enable_simd = true;           // Enable SIMD optimizations when available
-    size_t batch_size = 1000;         // Points per batch for parallel processing
-    
-    // TBB parallelization parameters
-    bool enable_tbb = true;            // Enable TBB parallel processing
-    size_t grain_size = 64;            // TBB grain size for column-wise parallelization
-    size_t max_threads = 0;            // Maximum threads (0 = auto-detect)
-    size_t min_columns_for_parallel = 8;  // Minimum columns to justify parallelization
-    
     // Memory management
     core::MemoryPool<core::PointCloudSoA>* memory_pool = nullptr;
     
     // Execution mode
-    core::ExecutionMode::Mode execution_mode = core::ExecutionMode::Mode::AUTO;
+    core::ExecutionMode::Mode execution_mode = core::ExecutionMode::Mode::SINGLE_THREAD;
 };
 
 /**
@@ -60,8 +44,6 @@ struct InterpolationMetrics {
     std::chrono::nanoseconds interpolation_time{0};
     std::chrono::nanoseconds beam_processing_time{0};
     std::chrono::nanoseconds discontinuity_detection_time{0};
-    std::chrono::nanoseconds simd_optimization_time{0};
-    std::chrono::nanoseconds parallel_processing_time{0};
     
     size_t input_points{0};
     size_t output_points{0};
@@ -69,25 +51,15 @@ struct InterpolationMetrics {
     double interpolation_ratio{0.0};
     double throughput_points_per_second{0.0};
     
-    // TBB specific metrics
-    size_t columns_processed_parallel{0};
-    size_t threads_used{0};
-    double parallel_efficiency{0.0};
-    
     void reset() {
         interpolation_time = std::chrono::nanoseconds{0};
         beam_processing_time = std::chrono::nanoseconds{0};
         discontinuity_detection_time = std::chrono::nanoseconds{0};
-        simd_optimization_time = std::chrono::nanoseconds{0};
-        parallel_processing_time = std::chrono::nanoseconds{0};
         input_points = 0;
         output_points = 0;
         discontinuities_detected = 0;
         interpolation_ratio = 0.0;
         throughput_points_per_second = 0.0;
-        columns_processed_parallel = 0;
-        threads_used = 0;
-        parallel_efficiency = 0.0;
     }
     
     void calculateThroughput() {
@@ -127,7 +99,6 @@ struct InterpolationResult {
  * - Catmull-Rom cubic spline interpolation
  * - OS1-32 beam altitude management
  * - Discontinuity detection
- * - SIMD optimization ready
  * - Thread-safe operation
  * - Memory pool integration
  */
@@ -191,17 +162,6 @@ public:
      */
     void resetMetrics();
     
-    /**
-     * @brief Check if SIMD optimizations are available
-     * @return True if SIMD is available and enabled
-     */
-    bool isSIMDAvailable() const noexcept;
-    
-    /**
-     * @brief Check if TBB parallelization is available
-     * @return True if TBB is available and enabled
-     */
-    bool isTBBAvailable() const noexcept;
     
     /**
      * @brief Get beam altitude manager
@@ -238,38 +198,6 @@ private:
                       float beam_altitude,
                       core::PointCloudSoA& output);
     
-    /**
-     * @brief Process multiple beams in parallel using TBB
-     * @param beam_groups Vector of beam point indices grouped by beam
-     * @param input Input point cloud
-     * @param output_channels Number of output channels
-     * @param output Output cloud to store results
-     * @return Total number of interpolated points generated
-     */
-    size_t processBeamsParallel(const std::vector<std::vector<size_t>>& beam_groups,
-                               const core::PointCloudSoA& input,
-                               size_t output_channels,
-                               core::PointCloudSoA& output);
-    
-    /**
-     * @brief Thread-safe version of processBeam for parallel execution
-     * @param beam_indices Indices of points belonging to a single beam
-     * @param input Input point cloud containing source data
-     * @param beam_altitude Target altitude for interpolation
-     * @param local_output Thread-local output cloud
-     * @param target_beam_id Target beam identifier
-     * @return Number of interpolated points generated
-     */
-    size_t processBeamThreadSafe(const std::vector<size_t>& beam_indices,
-                                const core::PointCloudSoA& input,
-                                float beam_altitude,
-                                core::PointCloudSoA& local_output,
-                                uint16_t target_beam_id);
-    
-    /**
-     * @brief Initialize TBB capabilities and thread management
-     */
-    void initializeTBB();
     
     /**
      * @brief Detect discontinuities in beam data
@@ -287,10 +215,6 @@ private:
      */
     std::vector<std::vector<size_t>> separateBeams(const core::PointCloudSoA& input) const;
     
-    /**
-     * @brief Initialize SIMD capabilities
-     */
-    void initializeSIMD();
     
     /**
      * @brief Validate configuration parameters
@@ -318,22 +242,8 @@ private:
     mutable std::mutex metrics_mutex_;
     InterpolationMetrics metrics_;
     
-    // SIMD capabilities
-    bool simd_available_;
-    bool avx2_supported_;
-    bool sse_supported_;
-    
     // Internal state
     std::atomic<bool> initialized_{false};
-    
-    // TBB parallelization state
-    bool tbb_available_;
-    size_t num_threads_;
-    
-#ifdef PRISM_ENABLE_TBB
-    std::unique_ptr<tbb::global_control> thread_limiter_;
-    std::unique_ptr<tbb::task_arena> task_arena_;
-#endif
 };
 
 /**
@@ -348,13 +258,6 @@ std::unique_ptr<InterpolationEngine> createInterpolationEngine(
  * @brief Utility functions for interpolation
  */
 namespace utils {
-    /**
-     * @brief Calculate optimal batch size for given input size
-     * @param input_size Size of input point cloud
-     * @param num_threads Number of available threads
-     * @return Optimal batch size
-     */
-    size_t calculateOptimalBatchSize(size_t input_size, size_t num_threads);
     
     /**
      * @brief Convert interpolation metrics to string

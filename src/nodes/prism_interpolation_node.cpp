@@ -68,10 +68,7 @@ public:
         config.output_channels = output_channels_;
         config.discontinuity_threshold = static_cast<float>(discontinuity_threshold_);
         config.enable_discontinuity_detection = true;
-        config.enable_simd = true;  // Enable SIMD optimizations
-        config.enable_tbb = false;  // TBB will be in separate branch
-        config.max_threads = 4;     // OpenMP threads
-        config.execution_mode = core::ExecutionMode::Mode::CPU_PARALLEL;
+        config.execution_mode = core::ExecutionMode::Mode::SINGLE_THREAD;
         
         // Set interpolation method
         if (interpolation_method_ == "cubic") {
@@ -106,8 +103,7 @@ public:
             std::bind(&PRISMInterpolationNode::printStatistics, this)
         );
         
-        // Configure OpenMP
-        // Reduce threads to 4 for better performance with small tasks
+        // Configure OpenMP for optimal performance
         int num_threads = std::min(4, omp_get_max_threads());
         omp_set_num_threads(num_threads);
         
@@ -123,7 +119,7 @@ public:
         RCLCPP_INFO(this->get_logger(),
             "  OpenMP Threads: %d", num_threads);
         RCLCPP_INFO(this->get_logger(),
-            "  InterpolationEngine: Active with BeamHandler support");
+            "  InterpolationEngine: Active");
     }
     
     /**

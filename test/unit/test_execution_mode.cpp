@@ -99,7 +99,7 @@ TEST_F(ExecutionModeTest, SingleThreadPipelineMetrics) {
 }
 
 TEST_F(ExecutionModeTest, ExecutionModeAutoSelection) {
-    ExecutionMode exec_mode(ExecutionMode::Mode::AUTO, exec_config);
+    ExecutionMode exec_mode(ExecutionMode::Mode::SINGLE_THREAD, exec_config);
     
     auto identity_stage = createIdentityStage();
     
@@ -115,18 +115,6 @@ TEST_F(ExecutionModeTest, ExecutionModeAutoSelection) {
 TEST_F(ExecutionModeTest, ExecutionModeModeAvailability) {
     // Single thread should always be available
     EXPECT_TRUE(ExecutionMode::isModeAvailable(ExecutionMode::Mode::SINGLE_THREAD));
-    
-    // Auto mode should always be available (falls back to single thread)
-    EXPECT_TRUE(ExecutionMode::isModeAvailable(ExecutionMode::Mode::AUTO));
-    
-    // CPU_PARALLEL and SIMD availability depends on hardware/compilation
-    // Just check that the function doesn't crash
-    bool cpu_parallel_available = ExecutionMode::isModeAvailable(ExecutionMode::Mode::CPU_PARALLEL);
-    bool simd_available = ExecutionMode::isModeAvailable(ExecutionMode::Mode::SIMD);
-    
-    // Log the availability for information
-    std::cout << "CPU_PARALLEL available: " << cpu_parallel_available << std::endl;
-    std::cout << "SIMD available: " << simd_available << std::endl;
 }
 
 TEST_F(ExecutionModeTest, ExecutionModeModeSettingAndSwitching) {
@@ -134,60 +122,18 @@ TEST_F(ExecutionModeTest, ExecutionModeModeSettingAndSwitching) {
     
     EXPECT_EQ(exec_mode.getMode(), ExecutionMode::Mode::SINGLE_THREAD);
     
-    // Switch to AUTO mode
-    exec_mode.setMode(ExecutionMode::Mode::AUTO);
-    // AUTO mode gets resolved to an actual mode
-    EXPECT_NE(exec_mode.getMode(), ExecutionMode::Mode::AUTO);
-    
-    // Switch back to single thread
+    // Should remain single thread
     exec_mode.setMode(ExecutionMode::Mode::SINGLE_THREAD);
     EXPECT_EQ(exec_mode.getMode(), ExecutionMode::Mode::SINGLE_THREAD);
 }
 
-TEST_F(ExecutionModeTest, CPUParallelPipelineWhenAvailable) {
-    if (!ExecutionMode::isModeAvailable(ExecutionMode::Mode::CPU_PARALLEL)) {
-        GTEST_SKIP() << "CPU_PARALLEL mode not available on this system";
-    }
-    
-    CPUParallelPipeline pipeline(exec_config);
-    EXPECT_TRUE(pipeline.isAvailable());
-    
-    auto identity_stage = createIdentityStage();
-    
-    auto result = pipeline.execute(test_cloud, identity_stage, identity_stage, identity_stage);
-    
-    ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->size(), test_cloud.size());
-}
-
-TEST_F(ExecutionModeTest, SIMDPipelineWhenAvailable) {
-    if (!ExecutionMode::isModeAvailable(ExecutionMode::Mode::SIMD)) {
-        GTEST_SKIP() << "SIMD mode not available on this system";
-    }
-    
-    SIMDPipeline pipeline(exec_config);
-    EXPECT_TRUE(pipeline.isAvailable());
-    
-    auto identity_stage = createIdentityStage();
-    
-    auto result = pipeline.execute(test_cloud, identity_stage, identity_stage, identity_stage);
-    
-    ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->size(), test_cloud.size());
-}
 
 TEST_F(ExecutionModeTest, ExecutionUtilityFunctions) {
     // Test mode string conversion
     EXPECT_STREQ(execution_utils::modeToString(ExecutionMode::Mode::SINGLE_THREAD), "SINGLE_THREAD");
-    EXPECT_STREQ(execution_utils::modeToString(ExecutionMode::Mode::CPU_PARALLEL), "CPU_PARALLEL");
-    EXPECT_STREQ(execution_utils::modeToString(ExecutionMode::Mode::SIMD), "SIMD");
-    EXPECT_STREQ(execution_utils::modeToString(ExecutionMode::Mode::AUTO), "AUTO");
     
     // Test string to mode conversion
     EXPECT_EQ(execution_utils::stringToMode("SINGLE_THREAD"), ExecutionMode::Mode::SINGLE_THREAD);
-    EXPECT_EQ(execution_utils::stringToMode("CPU_PARALLEL"), ExecutionMode::Mode::CPU_PARALLEL);
-    EXPECT_EQ(execution_utils::stringToMode("SIMD"), ExecutionMode::Mode::SIMD);
-    EXPECT_EQ(execution_utils::stringToMode("AUTO"), ExecutionMode::Mode::AUTO);
     
     // Test invalid string
     EXPECT_THROW(execution_utils::stringToMode("INVALID"), std::invalid_argument);

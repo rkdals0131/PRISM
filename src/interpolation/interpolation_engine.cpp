@@ -6,17 +6,6 @@
 #include <cstring>
 #include <thread>
 
-#ifdef PRISM_ENABLE_TBB
-#include <tbb/parallel_for.h>
-#include <tbb/blocked_range.h>
-#include <tbb/task_arena.h>
-#include <tbb/global_control.h>
-#endif
-
-#ifdef __x86_64__
-#include <cpuid.h>
-#include <immintrin.h>
-#endif
 
 namespace prism {
 namespace interpolation {
@@ -24,27 +13,15 @@ namespace interpolation {
 InterpolationEngine::InterpolationEngine(const InterpolationConfig& config)
     : config_(config)
     , beam_manager_(BeamAltitudeConfig{})
-    , simd_available_(false)
-    , avx2_supported_(false)
-    , sse_supported_(false)
-    , tbb_available_(false)
-    , num_threads_(0)
 {
     if (!validateConfig(config_)) {
         throw std::invalid_argument("Invalid interpolation configuration");
     }
     
-    // Initialize SIMD capabilities
-    initializeSIMD();
-    
-    // Initialize TBB capabilities
-    initializeTBB();
-    
     // Create Catmull-Rom interpolator with compatible configuration
     CatmullRomConfig catmull_config;
     catmull_config.tension = config_.spline_tension;
     catmull_config.discontinuity_threshold = config_.discontinuity_threshold;
-    catmull_config.enable_simd = config_.enable_simd && simd_available_;
     interpolator_ = std::make_unique<CatmullRomInterpolator>(catmull_config);
     
     // Configure beam altitude manager
@@ -79,7 +56,6 @@ void InterpolationEngine::configure(const InterpolationConfig& config) {
         CatmullRomConfig catmull_config;
         catmull_config.tension = config_.spline_tension;
         catmull_config.discontinuity_threshold = config_.discontinuity_threshold;
-        catmull_config.enable_simd = config_.enable_simd && simd_available_;
         interpolator_->configure(catmull_config);
     }
     
@@ -154,83 +130,37 @@ InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& 
         result.points_per_beam.reserve(output_channels);
         result.beam_altitudes.reserve(output_channels);
         
-        // Choose between parallel and serial processing
-        if (config_.enable_tbb && tbb_available_ && 
-            output_channels >= config_.min_columns_for_parallel) {
+        // Use serial processing for simplicity
+        for (size_t target_beam = 0; target_beam < output_channels; ++target_beam) {
+            const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
             
-            auto parallel_start = std::chrono::high_resolution_clock::now();
-            
-            // Use parallel processing
-            processBeamsParallel(beam_groups, input, output_channels, *result.interpolated_cloud);
-            
-            // Populate points_per_beam and beam_altitudes for parallel processing
-            // This information is needed for the result but wasn't being filled in parallel mode
-            for (size_t target_beam = 0; target_beam < output_channels; ++target_beam) {
-                const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
-                
-                // For now, we'll use a placeholder count since tracking per-beam counts
-                // in parallel processing would require more complex synchronization
-                // In production, this could be tracked per thread and aggregated
-                if (interpolated_beam.is_original) {
-                    if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                        result.points_per_beam.push_back(beam_groups[interpolated_beam.source_beam_low].size());
-                    } else {
-                        result.points_per_beam.push_back(0);
+            if (interpolated_beam.is_original) {
+                // Direct copy for original beams
+                if (interpolated_beam.source_beam_low < beam_groups.size()) {
+                    const auto& beam_indices = beam_groups[interpolated_beam.source_beam_low];
+                    for (size_t idx : beam_indices) {
+                        result.interpolated_cloud->addPoint(
+                            input.x[idx], input.y[idx], input.z[idx], input.intensity[idx],
+                            input.hasColor() ? input.r[idx] : 0,
+                            input.hasColor() ? input.g[idx] : 0,
+                            input.hasColor() ? input.b[idx] : 0,
+                            static_cast<uint16_t>(target_beam)
+                        );
                     }
+                    result.points_per_beam.push_back(beam_indices.size());
                 } else {
-                    // For interpolated beams, estimate based on source beam size
-                    if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                        result.points_per_beam.push_back(beam_groups[interpolated_beam.source_beam_low].size() * 2);
-                    } else {
-                        result.points_per_beam.push_back(0);
-                    }
+                    result.points_per_beam.push_back(0);
                 }
-                
-                result.beam_altitudes.push_back(interpolated_beam.altitude_angle);
+            } else {
+                // Interpolate between source beams
+                size_t points_added = processBeam(beam_groups[interpolated_beam.source_beam_low],
+                                                input,
+                                                interpolated_beam.altitude_angle,
+                                                *result.interpolated_cloud);
+                result.points_per_beam.push_back(points_added);
             }
             
-            auto parallel_end = std::chrono::high_resolution_clock::now();
-            
-            {
-                std::lock_guard<std::mutex> lock(metrics_mutex_);
-                metrics_.parallel_processing_time += std::chrono::duration_cast<std::chrono::nanoseconds>(parallel_end - parallel_start);
-                metrics_.columns_processed_parallel = output_channels;
-                metrics_.threads_used = num_threads_;
-            }
-            
-        } else {
-            // Use serial processing
-            for (size_t target_beam = 0; target_beam < output_channels; ++target_beam) {
-                const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
-                
-                if (interpolated_beam.is_original) {
-                    // Direct copy for original beams
-                    if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                        const auto& beam_indices = beam_groups[interpolated_beam.source_beam_low];
-                        for (size_t idx : beam_indices) {
-                            result.interpolated_cloud->addPoint(
-                                input.x[idx], input.y[idx], input.z[idx], input.intensity[idx],
-                                input.hasColor() ? input.r[idx] : 0,
-                                input.hasColor() ? input.g[idx] : 0,
-                                input.hasColor() ? input.b[idx] : 0,
-                                static_cast<uint16_t>(target_beam)
-                            );
-                        }
-                        result.points_per_beam.push_back(beam_indices.size());
-                    } else {
-                        result.points_per_beam.push_back(0);
-                    }
-                } else {
-                    // Interpolate between source beams
-                    size_t points_added = processBeam(beam_groups[interpolated_beam.source_beam_low],
-                                                    input,
-                                                    interpolated_beam.altitude_angle,
-                                                    *result.interpolated_cloud);
-                    result.points_per_beam.push_back(points_added);
-                }
-                
-                result.beam_altitudes.push_back(interpolated_beam.altitude_angle);
-            }
+            result.beam_altitudes.push_back(interpolated_beam.altitude_angle);
         }
         
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -374,25 +304,6 @@ std::vector<std::vector<size_t>> InterpolationEngine::separateBeams(const core::
     return beam_groups;
 }
 
-void InterpolationEngine::initializeSIMD() {
-#ifdef __x86_64__
-    unsigned int eax, ebx, ecx, edx;
-    
-    // Check for SSE support
-    __cpuid(1, eax, ebx, ecx, edx);
-    sse_supported_ = (edx & (1 << 25)) != 0;
-    
-    // Check for AVX2 support
-    __cpuid(7, eax, ebx, ecx, edx);
-    avx2_supported_ = (ebx & (1 << 5)) != 0;
-    
-    simd_available_ = sse_supported_ || avx2_supported_;
-#else
-    simd_available_ = false;
-    avx2_supported_ = false;
-    sse_supported_ = false;
-#endif
-}
 
 bool InterpolationEngine::validateConfig(const InterpolationConfig& config) const {
     if (config.input_channels == 0 || config.output_channels == 0) {
@@ -404,10 +315,6 @@ bool InterpolationEngine::validateConfig(const InterpolationConfig& config) cons
     }
     
     if (config.discontinuity_threshold <= 0.0f) {
-        return false;
-    }
-    
-    if (config.batch_size == 0) {
         return false;
     }
     
@@ -452,13 +359,6 @@ void InterpolationEngine::resetMetrics() {
     metrics_.reset();
 }
 
-bool InterpolationEngine::isSIMDAvailable() const noexcept {
-    return config_.enable_simd && simd_available_;
-}
-
-bool InterpolationEngine::isTBBAvailable() const noexcept {
-    return config_.enable_tbb && tbb_available_;
-}
 
 void InterpolationEngine::updateMetrics(std::chrono::nanoseconds duration, size_t discontinuities) {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
@@ -468,16 +368,6 @@ void InterpolationEngine::updateMetrics(std::chrono::nanoseconds duration, size_
 
 const InterpolationMetrics& InterpolationEngine::getMetrics() const noexcept {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
-    
-    // Calculate parallel efficiency if parallel processing was used
-    if (metrics_.parallel_processing_time.count() > 0 && metrics_.threads_used > 1) {
-        // Efficiency = (serial_time_estimate / parallel_time) / num_threads
-        // For now, use a simple heuristic
-        const_cast<InterpolationMetrics&>(metrics_).parallel_efficiency = 
-            static_cast<double>(metrics_.columns_processed_parallel) / 
-            (metrics_.threads_used * (metrics_.parallel_processing_time.count() / 1000000.0)); // normalize to ms
-    }
-    
     return metrics_;
 }
 
@@ -524,190 +414,6 @@ bool validateOS132Compatibility(const InterpolationConfig& config) {
 }
 
 } // namespace utils
-
-} // namespace interpolation
-} // namespace prism
-
-// Implementation of TBB-specific methods
-namespace prism {
-namespace interpolation {
-
-void InterpolationEngine::initializeTBB() {
-#ifdef PRISM_ENABLE_TBB
-    try {
-        // Detect number of available threads
-        if (config_.max_threads == 0) {
-            num_threads_ = std::thread::hardware_concurrency();
-            if (num_threads_ == 0) num_threads_ = 8;  // fallback
-        } else {
-            num_threads_ = config_.max_threads;
-        }
-        
-        // Initialize TBB with thread limit
-        thread_limiter_ = std::make_unique<tbb::global_control>(
-            tbb::global_control::max_allowed_parallelism, num_threads_);
-        
-        // Create task arena
-        task_arena_ = std::make_unique<tbb::task_arena>(num_threads_);
-        
-        tbb_available_ = true;
-        
-    } catch (const std::exception& e) {
-        tbb_available_ = false;
-        num_threads_ = 1;
-    }
-#else
-    tbb_available_ = false;
-    num_threads_ = 1;
-#endif
-}
-
-size_t InterpolationEngine::processBeamsParallel(
-    const std::vector<std::vector<size_t>>& beam_groups,
-    const core::PointCloudSoA& input,
-    size_t output_channels,
-    core::PointCloudSoA& output) {
-    
-#ifdef PRISM_ENABLE_TBB
-    if (!tbb_available_ || !task_arena_) {
-        // Fallback to serial processing
-        size_t total_points = 0;
-        for (size_t target_beam = 0; target_beam < output_channels; ++target_beam) {
-            const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
-            if (!interpolated_beam.is_original) {
-                total_points += processBeam(beam_groups[interpolated_beam.source_beam_low],
-                                          input, interpolated_beam.altitude_angle, output);
-            }
-        }
-        return total_points;
-    }
-    
-    // Thread-safe accumulator for total points
-    std::atomic<size_t> total_points_atomic{0};
-    
-    // Parallel processing using TBB
-    task_arena_->execute([&] {
-        tbb::parallel_for(
-            tbb::blocked_range<size_t>(0, output_channels, config_.grain_size),
-            [&](const tbb::blocked_range<size_t>& range) {
-                // Local buffer for this thread's work
-                core::PointCloudSoA local_output(1000);  // Thread-local buffer
-                size_t local_points = 0;
-                
-                for (size_t target_beam = range.begin(); target_beam != range.end(); ++target_beam) {
-                    const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
-                    
-                    if (interpolated_beam.is_original) {
-                        // Direct copy for original beams
-                        if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                            const auto& beam_indices = beam_groups[interpolated_beam.source_beam_low];
-                            for (size_t idx : beam_indices) {
-                                local_output.addPoint(
-                                    input.x[idx], input.y[idx], input.z[idx], input.intensity[idx],
-                                    input.hasColor() ? input.r[idx] : 0,
-                                    input.hasColor() ? input.g[idx] : 0,
-                                    input.hasColor() ? input.b[idx] : 0,
-                                    static_cast<uint16_t>(target_beam)
-                                );
-                                ++local_points;
-                            }
-                        }
-                    } else {
-                        // Interpolate between source beams
-                        if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                            local_points += processBeamThreadSafe(
-                                beam_groups[interpolated_beam.source_beam_low],
-                                input,
-                                interpolated_beam.altitude_angle,
-                                local_output,
-                                target_beam
-                            );
-                        }
-                    }
-                }
-                
-                // Merge local results into main output (thread-safe)
-                {
-                    std::lock_guard<std::mutex> lock(metrics_mutex_); // Reuse existing mutex
-                    for (size_t i = 0; i < local_output.size(); ++i) {
-                        output.addPoint(
-                            local_output.x[i], local_output.y[i], local_output.z[i], 
-                            local_output.intensity[i],
-                            local_output.hasColor() ? local_output.r[i] : 0,
-                            local_output.hasColor() ? local_output.g[i] : 0,
-                            local_output.hasColor() ? local_output.b[i] : 0,
-                            local_output.hasRing() ? local_output.ring[i] : 0
-                        );
-                    }
-                }
-                
-                total_points_atomic += local_points;
-            }
-        );
-    });
-    
-    return total_points_atomic.load();
-    
-#else
-    // Fallback when TBB is not available
-    (void)beam_groups;
-    (void)input;
-    (void)output_channels;
-    (void)output;
-    return 0;
-#endif
-}
-
-// Thread-safe version of processBeam for parallel execution
-size_t InterpolationEngine::processBeamThreadSafe(
-    const std::vector<size_t>& beam_indices,
-    const core::PointCloudSoA& input,
-    float /* beam_altitude */,
-    core::PointCloudSoA& local_output,
-    uint16_t target_beam_id) {
-    
-    if (beam_indices.empty() || !interpolator_) {
-        return 0;
-    }
-    
-    // Create control points from beam data
-    std::vector<ControlPoint> control_points;
-    control_points.reserve(beam_indices.size());
-    
-    // Sort beam indices by azimuth angle for proper interpolation
-    std::vector<size_t> sorted_indices = beam_indices;
-    // For now, assume they're already sorted. In production, we'd sort by atan2(y, x)
-    
-    for (size_t idx : sorted_indices) {
-        control_points.emplace_back(
-            input.x[idx], input.y[idx], input.z[idx], 
-            input.intensity[idx], 0.0f  // timestamp placeholder
-        );
-    }
-    
-    // Interpolate using Catmull-Rom splines
-    std::vector<ControlPoint> interpolated_points;
-    size_t num_interpolated = std::max(size_t(1), beam_indices.size() * 2); // Double density
-    
-    if (!interpolator_->interpolate(control_points, num_interpolated, interpolated_points)) {
-        return 0;
-    }
-    
-    // Add interpolated points to local output
-    size_t points_added = 0;
-    for (const auto& point : interpolated_points) {
-        // Adjust Z coordinate based on target beam altitude
-        float adjusted_z = point.z; // In production, adjust based on beam_altitude
-        
-        local_output.addPoint(
-            point.x, point.y, adjusted_z, point.intensity,
-            0, 0, 0, target_beam_id
-        );
-        ++points_added;
-    }
-    
-    return points_added;
-}
 
 } // namespace interpolation
 } // namespace prism

@@ -14,16 +14,15 @@ namespace core {
  * @brief Structure-of-Arrays point cloud representation for cache-efficient processing
  * 
  * This data structure separates point cloud attributes into individual arrays
- * to improve cache locality and enable SIMD vectorization. All coordinate arrays
- * are aligned to 32-byte boundaries for AVX2 optimization.
+ * to improve cache locality during processing operations.
  */
 class PointCloudSoA {
 public:
-    // Coordinate arrays (32-byte aligned for AVX2)
-    alignas(32) std::vector<float> x;
-    alignas(32) std::vector<float> y;
-    alignas(32) std::vector<float> z;
-    alignas(32) std::vector<float> intensity;
+    // Coordinate arrays
+    std::vector<float> x;
+    std::vector<float> y;
+    std::vector<float> z;
+    std::vector<float> intensity;
     
     // Color arrays
     std::vector<uint8_t> r;
@@ -107,7 +106,7 @@ public:
                        size_t count);
     
     /**
-     * @brief Get pointers to coordinate data for SIMD processing
+     * @brief Get pointers to coordinate data for direct processing
      * @return Pointer to X coordinate array
      */
     float* getXData() noexcept { return x.data(); }
@@ -164,7 +163,6 @@ public:
     /**
      * @brief Apply a transformation matrix to all points
      * @param transform 4x4 transformation matrix (row-major)
-     * @note This is a placeholder for future SIMD optimization
      */
     void transform(const float transform[16]);
     
@@ -229,7 +227,7 @@ namespace utils {
     std::vector<PointCloudSoA> split(const PointCloudSoA& cloud, size_t num_parts);
     
     /**
-     * @brief Check if memory is properly aligned for SIMD
+     * @brief Check if memory is properly aligned
      * @param ptr Pointer to check
      * @param alignment Required alignment in bytes
      * @return True if aligned, false otherwise
