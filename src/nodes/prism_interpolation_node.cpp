@@ -18,6 +18,8 @@
 #include <memory>
 #include <cmath>
 #include <vector>
+#include <algorithm>
+#include <omp.h>
 
 namespace prism {
 namespace nodes {
@@ -75,8 +77,13 @@ public:
             std::bind(&PRISMInterpolationNode::printStatistics, this)
         );
         
+        // Configure OpenMP
+        // Reduce threads to 4 for better performance with small tasks
+        int num_threads = std::min(4, omp_get_max_threads());
+        omp_set_num_threads(num_threads);
+        
         RCLCPP_INFO(this->get_logger(), 
-            "PRISM Interpolation Node (Simplified) initialized");
+            "PRISM Interpolation Node (Simplified + OpenMP) initialized");
         RCLCPP_INFO(this->get_logger(), 
             "  Scale Factor: %.1fx (%d -> %d channels)",
             scale_factor_, input_channels_, output_channels_);
@@ -84,6 +91,8 @@ public:
             "  Method: %s", interpolation_method_.c_str());
         RCLCPP_INFO(this->get_logger(),
             "  Discontinuity Threshold: %.2f m", discontinuity_threshold_);
+        RCLCPP_INFO(this->get_logger(),
+            "  OpenMP Threads: %d", num_threads);
     }
     
     /**
@@ -163,6 +172,7 @@ private:
         output->is_dense = false;
         
         // Process each column independently (azimuth angle)
+        #pragma omp parallel for schedule(dynamic, 32)
         for (size_t col = 0; col < input->width; ++col) {
             // Step 1: Copy original points to their positions
             for (size_t row = 0; row < input->height; ++row) {
@@ -235,7 +245,7 @@ private:
             double fps = 1000.0 / avg_time;
             
             RCLCPP_INFO(this->get_logger(), 
-                "=== PRISM Interpolation Statistics (Simplified) ===");
+                "=== PRISM Interpolation Statistics (OpenMP) ===");
             RCLCPP_INFO(this->get_logger(), 
                 "Frames processed: %ld", frame_count_.load());
             RCLCPP_INFO(this->get_logger(), 

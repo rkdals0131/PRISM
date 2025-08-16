@@ -40,6 +40,7 @@ find_package(PCL 1.10 REQUIRED COMPONENTS common io kdtree search filters)
 find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc calib3d)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(TBB REQUIRED)
+find_package(OpenMP REQUIRED)
 find_package(yaml-cpp REQUIRED)
 
 # Include directories
@@ -117,6 +118,7 @@ target_link_libraries(prism_interpolation_node
   ${PROJECT_NAME}_core
   ${PCL_LIBRARIES}
   ${rclcpp_LIBRARIES}
+  OpenMP::OpenMP_CXX
 )
 
 ament_target_dependencies(prism_interpolation_node
