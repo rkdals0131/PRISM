@@ -1,0 +1,47 @@
+# PRISM Node Parameters Configuration
+
+# Phase 2: Interpolation Node Parameters (Simplified)
+prism_interpolation_node:
+  ros__parameters:
+    # Interpolation settings
+    scale_factor: 2.0             # Scale factor (2.0 = 32 -> 64 channels)
+    discontinuity_threshold: 0.5  # Threshold for discontinuity detection (meters)
+    interpolation_method: "linear" # Interpolation method: "linear" or "cubic"
+    
+    # Topic configuration
+    input_topic: "/ouster/points"
+    output_topic: "/prism/interpolated_points"
+
+# Phase 5: Fusion Node Parameters (future implementation)
+prism_fusion_node:
+  ros__parameters:
+    # Interpolation settings
+    interpolation:
+      scale_factor: 2.0
+      method: "cubic"  # "linear", "cubic", "adaptive"
+      discontinuity_threshold: 0.5
+      
+    # Projection settings  
+    projection:
+      camera_count: 2
+      intrinsic_file: "config/multi_camera_intrinsic_calibration.yaml"
+      extrinsic_file: "config/multi_camera_extrinsic_calibration.yaml"
+      projection_threads: 4
+      
+    # Fusion settings
+    fusion:
+      color_fusion_method: "weighted_average"  # "nearest", "weighted_average", "confidence_based"
+      temporal_window: 0.1  # seconds
+      max_projection_distance: 100.0  # meters
+      
+    # Performance settings
+    performance:
+      enable_simd: true
+      thread_count: -1  # -1 for auto-detect
+      memory_pool_size: 1048576  # 1MB
+      
+    # Quality settings
+    quality:
+      min_confidence: 0.7
+      outlier_removal: true
+      smoothing_enabled: false
