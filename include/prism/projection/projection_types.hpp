@@ -155,6 +155,9 @@ struct ProjectionConfig {
     // Performance settings
     bool enable_parallel_processing = true;
     size_t max_threads = 0; // 0 = auto-detect
+    // Point sampling to reduce workload
+    int sample_stride = 1;         // use every Nth point (>=1)
+    size_t max_points_per_frame = 0; // 0 = no cap
     
     ProjectionConfig() = default;
     
@@ -183,6 +186,10 @@ struct ProjectionConfig {
         // Performance
         enable_parallel_processing = ConfigLoader::readNestedParam(node,
             "projection.parallel_cameras", enable_parallel_processing);
+        sample_stride = ConfigLoader::readNestedParam(node,
+            "projection.sample_stride", sample_stride);
+        max_points_per_frame = ConfigLoader::readNestedParam(node,
+            "projection.max_points", max_points_per_frame);
             
         // Debug
         enable_debug_visualization = ConfigLoader::readNestedParam(node,

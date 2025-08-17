@@ -57,7 +57,9 @@ prism_fusion_node:
       enable_frustum_culling: true
       min_depth: 0.5
       max_depth: 100.0
-      parallel_cameras: false   # disable parallel to reduce overhead
+      parallel_cameras: true
+      sample_stride: 2           # use every 2nd point for speed
+      max_points: 120000         # cap per frame (0 disables)
 
     # Color extraction config (node expects 'extraction.*')
     extraction:

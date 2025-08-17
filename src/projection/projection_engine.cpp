@@ -66,7 +66,15 @@ bool ProjectionEngine::projectToAllCameras(const std::vector<LiDARPoint>& lidar_
     auto start_time = std::chrono::high_resolution_clock::now();
     
     result.clear();
-    result.input_count = lidar_points.size();
+    // Apply sampling/capping for performance
+    std::vector<LiDARPoint> sampled;
+    sampled.reserve(lidar_points.size());
+    const int stride = std::max(1, config_.sample_stride);
+    for (size_t i = 0; i < lidar_points.size(); i += stride) {
+        sampled.push_back(lidar_points[i]);
+        if (config_.max_points_per_frame > 0 && sampled.size() >= config_.max_points_per_frame) break;
+    }
+    result.input_count = sampled.size();
     result.timestamp = start_time;
     
     // Get camera IDs for processing
@@ -77,18 +85,18 @@ bool ProjectionEngine::projectToAllCameras(const std::vector<LiDARPoint>& lidar_
     if (config_.enable_parallel_processing && camera_ids.size() > 1) {
         std::for_each(std::execution::par_unseq, 
                      camera_ids.begin(), camera_ids.end(),
-                     [this, &lidar_points, &result, &camera_ids](const std::string& camera_id) {
+                     [this, &sampled, &result, &camera_ids](const std::string& camera_id) {
             auto it = std::find(camera_ids.begin(), camera_ids.end(), camera_id);
             size_t index = std::distance(camera_ids.begin(), it);
             
             CameraProjection& projection = result.camera_projections[index];
-            this->projectToCamera(lidar_points, camera_id, projection);
+            this->projectToCamera(sampled, camera_id, projection);
         });
     } else {
         // Sequential processing
         for (size_t i = 0; i < camera_ids.size(); ++i) {
             CameraProjection& projection = result.camera_projections[i];
-            if (!projectToCamera(lidar_points, camera_ids[i], projection)) {
+            if (!projectToCamera(sampled, camera_ids[i], projection)) {
                 std::cerr << "Failed to project to camera: " << camera_ids[i] << std::endl;
             }
         }
