@@ -22,6 +22,7 @@
 #include <chrono>
 #include <omp.h>
 #include <atomic>
+#include <std_msgs/msg/string.hpp>
 
 namespace prism {
 
@@ -411,6 +412,10 @@ private:
             interpolated_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
                 interpolated_output_topic_, 10);
         }
+
+        // Debug statistics publisher (shared topic with projection debug)
+        debug_stats_pub_ = create_publisher<std_msgs::msg::String>(
+            "/prism/projection_debug/statistics", 10);
         
         // Debug publishers if enabled
         if (get_parameter("enable_debug").as_bool()) {
@@ -443,11 +448,12 @@ private:
         }
         last_processed_time_ = now_time;
 
-        auto start_time = std::chrono::high_resolution_clock::now();
+        auto t_start = std::chrono::high_resolution_clock::now();
         
         // Convert ROS PointCloud2 to PCL (preserve intensity)
         pcl::PointCloud<pcl::PointXYZI>::Ptr input_cloud(new pcl::PointCloud<pcl::PointXYZI>);
         pcl::fromROSMsg(*lidar_msg, *input_cloud);
+        auto t_after_ros_to_pcl = std::chrono::high_resolution_clock::now();
         
         // Step 1: Interpolation (Phase 2)
         if (input_cloud->empty()) {
@@ -592,6 +598,7 @@ private:
             // No interpolation: operate directly on input SoA
             interpolated = &soa_cloud;
         }
+        auto t_after_interpolation = std::chrono::high_resolution_clock::now();
         
         // Step 2: Projection (Phase 3)
         std::map<std::string, cv::Mat> camera_images;
@@ -624,6 +631,7 @@ private:
             RCLCPP_ERROR(get_logger(), "Projection failed");
             return;
         }
+        auto t_after_projection = std::chrono::high_resolution_clock::now();
         
         // Step 3: Color Extraction (Phase 4)
         std::map<std::string, projection::ColorExtractor::ColorExtractionResult> extraction_results;
@@ -699,6 +707,7 @@ private:
         
         auto fusion_result = multi_camera_fusion_->fuseColorsWithDistances(
             extraction_results, pixel_distances, all_indices, fusion_config_);
+        auto t_after_fusion = std::chrono::high_resolution_clock::now();
         
         // Step 5: Create colored point cloud
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
@@ -730,10 +739,11 @@ private:
         pcl::toROSMsg(*colored_cloud, output_msg);
         output_msg.header = lidar_msg->header;
         colored_cloud_pub_->publish(output_msg);
+        auto t_after_publish = std::chrono::high_resolution_clock::now();
         
         // Calculate and log performance metrics
         auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - t_start);
         
         RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
             "PRISM Fusion Pipeline: %ld ms total | "
@@ -744,6 +754,24 @@ private:
             fusion_result.successful_fusions,
             100.0f * fusion_result.successful_fusions / std::max(size_t(1), interpolated->size()),
             fusion_result.camera_contribution_count.size());
+
+        // Publish detailed per-stage timings
+        if (debug_stats_pub_) {
+            auto ms = [](auto dt){ return std::chrono::duration_cast<std::chrono::milliseconds>(dt).count(); };
+            std_msgs::msg::String msg;
+            std::ostringstream s;
+            s << "\n=== PRISM Fusion Pipeline Timings ===\n";
+            s << "ROS->PCL:             " << ms(t_after_ros_to_pcl - t_start) << " ms\n";
+            s << "SoA build:            " << ms((t_after_interpolation - t_after_ros_to_pcl) - (t_after_interpolation - t_after_interpolation)) << " ms\n"; // included in interp stage
+            s << "Interpolation:         " << ms(t_after_interpolation - t_after_ros_to_pcl) << " ms\n";
+            s << "Projection:            " << ms(t_after_projection - t_after_interpolation) << " ms\n";
+            s << "Color extraction:      " << ms(t_after_fusion - t_after_projection) << " ms\n";
+            s << "Fusion:                " << ms(t_after_fusion - t_after_projection) << " ms (incl. extraction)\n";
+            s << "Publish colored cloud: " << ms(t_after_publish - t_after_fusion) << " ms\n";
+            s << "Total:                 " << duration.count() << " ms\n";
+            msg.data = s.str();
+            debug_stats_pub_->publish(msg);
+        }
     }
     
 private:
@@ -785,6 +813,7 @@ private:
     
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr colored_cloud_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_interpolated_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_stats_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr interpolated_cloud_pub_;
 
     // Processing control
