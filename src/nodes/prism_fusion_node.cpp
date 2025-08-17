@@ -40,7 +40,8 @@ public:
         
         // Synchronization / rate control
         declare_parameter("synchronization.queue_size", 3);
-        declare_parameter("synchronization.min_interval_ms", 100);
+        // Set to 0 to disable soft cap
+        declare_parameter("synchronization.min_interval_ms", 0);
 
         // Declare camera array parameters - support for dynamic camera configuration
         declare_parameter("cameras", std::vector<std::string>());
@@ -438,9 +439,9 @@ private:
             ~ProcessingGuard() { flag.store(false); }
         } guard(processing_);
 
-        // Enforce minimum processing interval
+        // Enforce minimum processing interval (0 disables)
         const auto now_time = this->get_clock()->now();
-        if (last_processed_time_.nanoseconds() != 0) {
+        if (min_interval_ms_ > 0 && last_processed_time_.nanoseconds() != 0) {
             auto dt_ns = (now_time - last_processed_time_).nanoseconds();
             if (dt_ns < static_cast<int64_t>(min_interval_ms_) * 1000000LL) {
                 return; // too soon; drop
@@ -449,6 +450,11 @@ private:
         last_processed_time_ = now_time;
 
         auto t_start = std::chrono::high_resolution_clock::now();
+        // Full cycle time since last publish (includes waiting)
+        double cycle_ms = 0.0;
+        if (last_publish_time_.nanoseconds() > 0) {
+            cycle_ms = (now_time - last_publish_time_).nanoseconds() / 1e6;
+        }
         
         // Convert ROS PointCloud2 to PCL (preserve intensity)
         pcl::PointCloud<pcl::PointXYZI>::Ptr input_cloud(new pcl::PointCloud<pcl::PointXYZI>);
@@ -762,16 +768,20 @@ private:
             std::ostringstream s;
             s << "\n=== PRISM Fusion Pipeline Timings ===\n";
             s << "ROS->PCL:             " << ms(t_after_ros_to_pcl - t_start) << " ms\n";
-            s << "SoA build:            " << ms((t_after_interpolation - t_after_ros_to_pcl) - (t_after_interpolation - t_after_interpolation)) << " ms\n"; // included in interp stage
+            // SoA build included in interpolation stage (reported below)
             s << "Interpolation:         " << ms(t_after_interpolation - t_after_ros_to_pcl) << " ms\n";
             s << "Projection:            " << ms(t_after_projection - t_after_interpolation) << " ms\n";
             s << "Color extraction:      " << ms(t_after_fusion - t_after_projection) << " ms\n";
             s << "Fusion:                " << ms(t_after_fusion - t_after_projection) << " ms (incl. extraction)\n";
             s << "Publish colored cloud: " << ms(t_after_publish - t_after_fusion) << " ms\n";
             s << "Total:                 " << duration.count() << " ms\n";
+            if (cycle_ms > 0.0) {
+                s << "Cycle (prev->this):   " << std::fixed << std::setprecision(2) << cycle_ms << " ms\n";
+            }
             msg.data = s.str();
             debug_stats_pub_->publish(msg);
         }
+        last_publish_time_ = this->get_clock()->now();
     }
     
 private:
@@ -819,6 +829,7 @@ private:
     // Processing control
     std::atomic<bool> processing_ {false};
     rclcpp::Time last_processed_time_ {0, 0, RCL_ROS_TIME};
+    rclcpp::Time last_publish_time_ {0, 0, RCL_ROS_TIME};
 };
 
 } // namespace prism
