@@ -25,8 +25,12 @@ class MemoryPool;
 template <typename T>
 struct PoolDeleter {
     void operator()(T* ptr) const {
-        if (pool && ptr) {
-            pool->release(ptr);
+        if (ptr) {
+            if (pool) {
+                pool->release(ptr);
+            } else {
+                delete ptr;  // pool이 nullptr일 때 일반 delete 수행
+            }
         }
     }
     MemoryPool<T>* pool = nullptr;

@@ -310,7 +310,7 @@ void ProjectionDebugNode::setupROS() {
     
     // Statistics timer (publish every 5 seconds)
     statistics_timer_ = this->create_wall_timer(
-        std::chrono::seconds(5),
+        std::chrono::seconds(2),
         std::bind(&ProjectionDebugNode::statisticsTimerCallback, this));
     
     RCLCPP_INFO(this->get_logger(), "ROS setup complete");
@@ -385,6 +385,9 @@ void ProjectionDebugNode::processProjection(const sensor_msgs::msg::PointCloud2:
     if (successful_projections_ % 10 == 0) { // Log every 10th projection
         logProjectionResult(result);
     }
+
+    // Publish updated statistics immediately for responsiveness
+    publishStatistics();
 }
 
 void ProjectionDebugNode::publishVisualization(const projection::ProjectionResult& result,
