@@ -67,8 +67,12 @@ void ProjectionDebugNode::loadParameters() {
     camera_ids_ = this->get_parameter("camera_ids").as_string_array();
     
     // Topic configuration
-    this->declare_parameter("lidar_topic", "/velodyne_points");
+    this->declare_parameter("lidar_topic", "/ouster/points");
     lidar_topic_ = this->get_parameter("lidar_topic").as_string();
+    this->declare_parameter("interpolated_topic", "/ouster/points/interpolated");
+    interpolated_topic_ = this->get_parameter("interpolated_topic").as_string();
+    this->declare_parameter("prefer_interpolated", true);
+    prefer_interpolated_ = this->get_parameter("prefer_interpolated").as_bool();
     
     this->declare_parameter("output_topic_prefix", "/prism/projection_debug");
     output_topic_prefix_ = this->get_parameter("output_topic_prefix").as_string();
@@ -118,6 +122,7 @@ void ProjectionDebugNode::loadParameters() {
     RCLCPP_INFO(this->get_logger(), "Loaded parameters:");
     RCLCPP_INFO(this->get_logger(), "  - Cameras: %zu", camera_ids_.size());
     RCLCPP_INFO(this->get_logger(), "  - LiDAR topic: %s", lidar_topic_.c_str());
+    RCLCPP_INFO(this->get_logger(), "  - Interpolated topic: %s (prefer=%s)", interpolated_topic_.c_str(), prefer_interpolated_ ? "true" : "false");
     RCLCPP_INFO(this->get_logger(), "  - Calibration dir: %s", calibration_directory_.c_str());
     RCLCPP_INFO(this->get_logger(), "  - Depth range: %.2f - %.2f m", 
                projection_config_.min_depth, projection_config_.max_depth);
@@ -254,9 +259,13 @@ void ProjectionDebugNode::setupROS() {
     rclcpp::QoS qos(10);
     qos.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
     
-    cloud_subscriber_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    // Subscribe to raw and interpolated clouds. Prefer interpolated if enabled and fresh.
+    cloud_subscriber_raw_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         lidar_topic_, qos,
-        std::bind(&ProjectionDebugNode::pointCloudCallback, this, std::placeholders::_1));
+        std::bind(&ProjectionDebugNode::rawCloudCallback, this, std::placeholders::_1));
+    cloud_subscriber_interp_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        interpolated_topic_, qos,
+        std::bind(&ProjectionDebugNode::interpolatedCloudCallback, this, std::placeholders::_1));
     
     // Setup camera subscribers and visualization publishers
     for (const auto& camera_id : camera_ids_) {
@@ -292,7 +301,7 @@ void ProjectionDebugNode::setupROS() {
     RCLCPP_INFO(this->get_logger(), "ROS setup complete");
 }
 
-void ProjectionDebugNode::pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+void ProjectionDebugNode::rawCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
     if (!is_initialized_) {
         return;
     }
@@ -300,10 +309,35 @@ void ProjectionDebugNode::pointCloudCallback(const sensor_msgs::msg::PointCloud2
     std::lock_guard<std::mutex> lock(processing_mutex_);
     
     try {
+        // If we prefer interpolated and a fresh interpolated message arrived recently, skip raw
+        auto now = this->get_clock()->now();
+        if (prefer_interpolated_) {
+            auto age_ns = (now - last_interpolated_stamp_).nanoseconds();
+            if (age_ns > 0 && age_ns < static_cast<int64_t>(2e8)) { // 200ms
+                return;
+            }
+        }
         processProjection(msg);
         processed_clouds_++;
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "Error processing point cloud: %s", e.what());
+    }
+}
+
+void ProjectionDebugNode::interpolatedCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+    if (!is_initialized_) {
+        return;
+    }
+    last_interpolated_stamp_ = msg->header.stamp;
+    if (!prefer_interpolated_) {
+        return; // if not preferring, let raw handle
+    }
+    std::lock_guard<std::mutex> lock(processing_mutex_);
+    try {
+        processProjection(msg);
+        processed_clouds_++;
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Error processing interpolated point cloud: %s", e.what());
     }
 }
 

@@ -109,7 +109,8 @@ private:
      * @brief Point cloud callback
      * @param msg Point cloud message
      */
-    void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    void rawCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    void interpolatedCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
     
     /**
      * @brief Camera image callback
@@ -179,7 +180,8 @@ private:
     
     // ROS components
     std::shared_ptr<image_transport::ImageTransport> image_transport_;
-    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscriber_;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscriber_raw_;
+    rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_subscriber_interp_;
     
     // Camera subscribers and publishers
     std::unordered_map<std::string, CameraSubscriber> camera_subscribers_;
@@ -194,6 +196,9 @@ private:
     std::vector<std::string> camera_ids_;
     std::string calibration_directory_;
     std::string lidar_topic_;
+    std::string interpolated_topic_;
+    bool prefer_interpolated_ {true};
+    rclcpp::Time last_interpolated_stamp_ {0,0,RCL_ROS_TIME};
     std::string output_topic_prefix_;
     
     // Timing and synchronization
