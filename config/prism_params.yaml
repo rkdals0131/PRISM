@@ -37,8 +37,8 @@ prism_fusion_node:
 
     # Synchronization & throttling for stability
     synchronization:
-      queue_size: 3
-      min_interval_ms: 100
+      queue_size: 1
+      min_interval_ms: 0
 
     # Interpolation disabled (use raw points)
     interpolation:

@@ -40,7 +40,7 @@ public:
         declare_parameter("topics.debug_interpolated", "/prism/debug/interpolated");
         
         // Synchronization / rate control
-        declare_parameter("synchronization.queue_size", 3);
+        declare_parameter("synchronization.queue_size", 1);
         // Set to 0 to disable soft cap
         declare_parameter("synchronization.min_interval_ms", 0);
         // Use latest image cache instead of strict sync
@@ -423,14 +423,17 @@ private:
             }
         }
         
-        // Create publisher for colored point cloud
+        // Create publishers with SensorData QoS to avoid backpressure
+        auto pub_qos = rclcpp::SensorDataQoS();
+        pub_qos.keep_last(1);
+        pub_qos.best_effort();
         colored_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-            colored_output_topic_, 10);
+            colored_output_topic_, pub_qos);
         
         // Create publisher for interpolated point cloud (if enabled)
         if (interpolation_enabled_) {
             interpolated_cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-                interpolated_output_topic_, 10);
+                interpolated_output_topic_, pub_qos);
         }
 
         // Debug statistics publisher (shared topic with projection debug)
@@ -440,7 +443,7 @@ private:
         // Debug publishers if enabled
         if (get_parameter("enable_debug").as_bool()) {
             debug_interpolated_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-                debug_interpolated_topic_, 10);
+                debug_interpolated_topic_, pub_qos);
         }
     }
     
@@ -1107,7 +1110,8 @@ private:
         // Timings
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - t_start);
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+        // Use DEBUG level to avoid console bottleneck at high rates
+        RCLCPP_DEBUG(get_logger(),
             "PRISM Fusion Pipeline (cache): %ld ms | Points: %zu | Colored: %zu (%.1f%%)",
             duration.count(), interpolated->size(), fusion_result.successful_fusions,
             100.0f * fusion_result.successful_fusions / std::max<size_t>(1, interpolated->size()));
