@@ -5,7 +5,7 @@ prism_interpolation_node:
 
 projection_debug_node:
   ros__parameters:
-    lidar_topic: "/ouster/points"
+    lidar_topic: "/ouster/points/interpolated"
     output_topic_prefix: "/prism/projection_debug"
     calibration_directory: "/home/user1/ROS2_Workspace/ros2_ws/install/prism/share/prism/config"
     time_tolerance_sec: 0.2

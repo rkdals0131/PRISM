@@ -183,7 +183,7 @@ private:
     
     // Camera subscribers and publishers
     std::unordered_map<std::string, CameraSubscriber> camera_subscribers_;
-    std::unordered_map<std::string, image_transport::Publisher> visualization_publishers_;
+    std::unordered_map<std::string, rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr> visualization_publishers_;
     
     // Statistics and monitoring
     rclcpp::TimerBase::SharedPtr statistics_timer_;

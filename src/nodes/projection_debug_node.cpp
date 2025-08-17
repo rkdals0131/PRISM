@@ -296,9 +296,9 @@ void ProjectionDebugNode::setupROS() {
         
         camera_subscribers_.emplace(camera_id, std::move(camera_sub));
         
-        // Visualization publisher
+        // Visualization publisher (raw image only, no compressed/theora plugins)
         std::string vis_topic = output_topic_prefix_ + "/" + camera_id;
-        visualization_publishers_[camera_id] = image_transport_->advertise(vis_topic, 10);
+        visualization_publishers_[camera_id] = this->create_publisher<sensor_msgs::msg::Image>(vis_topic, rclcpp::QoS(10).reliable());
         
         RCLCPP_INFO(this->get_logger(), "Setup camera %s: %s -> %s", 
                    camera_id.c_str(), camera_topic.c_str(), vis_topic.c_str());
@@ -432,8 +432,7 @@ void ProjectionDebugNode::publishVisualization(const projection::ProjectionResul
             auto msg = cv_bridge::CvImage(std_msgs::msg::Header(), "bgr8", vis_image).toImageMsg();
             msg->header.stamp = timestamp;
             msg->header.frame_id = camera_id;
-            
-            pub_it->second.publish(msg);
+            pub_it->second->publish(*msg);
             
         } catch (const cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "Failed to publish visualization for %s: %s", 
@@ -530,44 +529,31 @@ void ProjectionDebugNode::statisticsTimerCallback() {
 }
 
 void ProjectionDebugNode::publishStatistics() {
+    // Expanded, vertical format with key metrics
     auto stats = projection_engine_->getStatistics();
-    auto current_time = this->get_clock()->now();
-    
-    std::ostringstream stats_stream;
-    stats_stream << std::fixed << std::setprecision(2);
-    stats_stream << "PRISM Projection Debug Statistics:\n";
-    stats_stream << "  Processed clouds: " << processed_clouds_ << "\n";
-    stats_stream << "  Successful projections: " << successful_projections_ << "\n";
-    stats_stream << "  Success rate: ";
-    
+    auto now = this->get_clock()->now();
+    std_msgs::msg::String msg;
+    std::ostringstream s;
+    s << "\n";
+    s << "=== PRISM Projection Debug Stats ===\n";
+    s << "Processed clouds:         " << processed_clouds_ << "\n";
+    s << "Successful projections:   " << successful_projections_ << "\n";
     if (processed_clouds_ > 0) {
-        stats_stream << (100.0 * successful_projections_ / processed_clouds_) << "%\n";
-    } else {
-        stats_stream << "N/A\n";
+        s << "Success rate:            " << std::fixed << std::setprecision(2)
+          << (100.0 * successful_projections_ / processed_clouds_) << " %\n";
     }
-    
-    stats_stream << "  Average processing time: " << avg_processing_time_ms_ << " ms\n";
-    stats_stream << "  Total points processed: " << stats.total_points_processed << "\n";
-    stats_stream << "  Total points projected: " << stats.total_points_projected << "\n";
-    stats_stream << "  Projection success rate: " << stats.getProjectionSuccessRate() << "%\n";
-    
-    // Per-camera statistics
-    for (const auto& camera_id : camera_ids_) {
-        auto it = stats.camera_projection_counts.find(camera_id);
-        if (it != stats.camera_projection_counts.end()) {
-            stats_stream << "  " << camera_id << " projections: " << it->second << "\n";
-        }
-    }
-    
-    auto msg = std_msgs::msg::String();
-    msg.data = stats_stream.str();
+    s << "Avg processing time:      " << std::fixed << std::setprecision(2)
+      << avg_processing_time_ms_ << " ms\n";
+    s << "Total points in:          " << stats.total_points_processed << "\n";
+    s << "Total points projected:   " << stats.total_points_projected << "\n";
+    s << "Projection success rate:  " << std::fixed << std::setprecision(2)
+      << stats.getProjectionSuccessRate() << " %\n";
+    msg.data = s.str();
     statistics_publisher_->publish(msg);
-    
-    // Log summary every minute
-    auto time_since_last = current_time - last_statistics_time_;
-    if (time_since_last.seconds() >= 60) {
-        RCLCPP_INFO(this->get_logger(), "\n%s", msg.data.c_str());
-        last_statistics_time_ = current_time;
+    // Periodic log
+    if ((now - last_statistics_time_).seconds() >= 60) {
+        RCLCPP_INFO(this->get_logger(), "%s", msg.data.c_str());
+        last_statistics_time_ = now;
     }
 }
 
