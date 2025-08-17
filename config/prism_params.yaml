@@ -1,19 +1,9 @@
-# PRISM Unified Configuration
-# Single source of truth for all PRISM parameters
-
-# Keep only node-specific parameters. Global block removed to avoid confusion.
-
-# ===================================================================
-# NODE-SPECIFIC OVERRIDES (if needed)
-# ===================================================================
-
-# Override specific parameters for individual nodes
 prism_interpolation_node:
   ros__parameters:
     interpolation:
       scale_factor: 2.0  # Override for testing lower density
 
-prism_projection_debug_node:
+projection_debug_node:
   ros__parameters:
     lidar_topic: "/ouster/points"
     output_topic_prefix: "/prism/projection_debug"
@@ -21,7 +11,7 @@ prism_projection_debug_node:
     time_tolerance_sec: 0.2
     enable_time_sync: true
     enable_status_overlay: true
-    point_radius: 3
+    point_radius: 1
     projection.min_depth: 0.5
     projection.max_depth: 100.0
     projection.margin_pixels: 5
