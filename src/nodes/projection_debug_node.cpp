@@ -550,9 +550,9 @@ void ProjectionDebugNode::publishStatistics() {
 void ProjectionDebugNode::logProjectionResult(const projection::ProjectionResult& result) {
     RCLCPP_DEBUG(this->get_logger(), 
                 "Projection result: %zu -> %zu points in %.2f ms",
-                result.total_input_points, 
-                result.total_projected_points,
-                result.processing_time_ms);
+                result.input_count, 
+                result.output_count,
+                result.getProcessingTimeMs());
     
     for (const auto& cam_proj : result.camera_projections) {
         RCLCPP_DEBUG(this->get_logger(),

@@ -25,7 +25,7 @@ protected:
     void SetUp() override {
         // Create a basic configuration
         config_.input_channels = 32;
-        config_.output_channels = 96;
+        config_.scale_factor = 3.0; // 32 -> 96
         config_.spline_tension = 0.5f;
         config_.discontinuity_threshold = 0.1f;
         
@@ -113,7 +113,7 @@ TEST_F(InterpolationEngineTest, BasicConstruction) {
     EXPECT_NO_THROW({
         InterpolationEngine engine(config_);
         EXPECT_EQ(engine.getConfig().input_channels, 32);
-        EXPECT_EQ(engine.getConfig().output_channels, 96);
+        EXPECT_EQ(engine.getConfig().getOutputBeams(), 96);
         std::cout << "Basic construction test passed" << std::endl;
     });
 }
@@ -194,9 +194,9 @@ TEST_F(InterpolationEngineTest, ParallelSerialCorrectnessComparison) {
     
     // Verify basic output properties
     EXPECT_GT(serial_result.interpolated_cloud->size(), 0);
-    EXPECT_EQ(serial_result.beams_processed, config_.output_channels);
-    EXPECT_EQ(serial_result.points_per_beam.size(), config_.output_channels);
-    EXPECT_EQ(serial_result.beam_altitudes.size(), config_.output_channels);
+    EXPECT_EQ(serial_result.beams_processed, config_.getOutputBeams());
+    EXPECT_EQ(serial_result.points_per_beam.size(), config_.getOutputBeams());
+    EXPECT_EQ(serial_result.beam_altitudes.size(), config_.getOutputBeams());
 }
 
 /**
@@ -229,10 +229,10 @@ TEST_F(InterpolationEngineTest, MetricsCollection) {
     const auto& metrics = engine.getMetrics();
     
     // Verify basic metrics
-    EXPECT_GT(metrics.interpolation_time.count(), 0);
-    EXPECT_EQ(metrics.input_points, input_cloud.size());
-    EXPECT_GT(metrics.output_points, 0);
-    EXPECT_GT(metrics.throughput_points_per_second, 0);
+    EXPECT_GT(metrics.interpolation_time_ms.get(), 0);
+    EXPECT_EQ(metrics.input_points.get(), static_cast<int64_t>(input_cloud.size()));
+    EXPECT_GT(metrics.output_points.get(), int64_t(0));
+    EXPECT_GT(metrics.throughput.getThroughput(), 0.0);
     
     // Verify interpolation ratio
     EXPECT_GT(metrics.interpolation_ratio, 0.0);

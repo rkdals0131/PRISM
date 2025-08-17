@@ -202,7 +202,8 @@ private:
     void transformPointsToCamera(const std::vector<LiDARPoint>& lidar_points,
                                 const CameraData& camera_data,
                                 std::vector<cv::Point3f>& camera_points,
-                                std::vector<float>& intensities);
+                                std::vector<float>& intensities,
+                                std::vector<size_t>& original_indices);
     
     /**
      * @brief Apply frustum culling to remove points behind camera
@@ -212,6 +213,7 @@ private:
      */
     void applyFrustumCulling(std::vector<cv::Point3f>& camera_points,
                             std::vector<float>& intensities,
+                            std::vector<size_t>& original_indices,
                             const ProjectionConfig& config);
     
     /**
@@ -224,6 +226,7 @@ private:
      */
     void projectPointsToImage(const std::vector<cv::Point3f>& camera_points,
                              const std::vector<float>& intensities,
+                             const std::vector<size_t>& original_indices,
                              const CameraData& camera_data,
                              const ProjectionConfig& config,
                              std::vector<PixelPoint>& pixel_points);

@@ -50,14 +50,23 @@ bool ProjectionEngine::initialize(const std::vector<std::string>& camera_ids) {
 
 bool ProjectionEngine::projectToAllCameras(const std::vector<LiDARPoint>& lidar_points, 
                                           ProjectionResult& result) {
-    if (!is_initialized_ || lidar_points.empty()) {
+    if (!is_initialized_) {
         return false;
+    }
+    
+    // Handle empty point cloud as valid case
+    if (lidar_points.empty()) {
+        result.clear();
+        result.input_count = 0;
+        result.output_count = 0;
+        result.timestamp = std::chrono::high_resolution_clock::now();
+        return true;
     }
     
     auto start_time = std::chrono::high_resolution_clock::now();
     
     result.clear();
-    result.total_input_points = lidar_points.size();
+    result.input_count = lidar_points.size();
     result.timestamp = start_time;
     
     // Get camera IDs for processing
@@ -86,15 +95,15 @@ bool ProjectionEngine::projectToAllCameras(const std::vector<LiDARPoint>& lidar_
     }
     
     // Compute final statistics
-    result.total_projected_points = 0;
+    result.output_count = 0;
     for (auto& projection : result.camera_projections) {
         projection.computeStatistics();
-        result.total_projected_points += projection.projected_point_count;
+        result.output_count += projection.projected_point_count;
     }
     
     auto end_time = std::chrono::high_resolution_clock::now();
-    result.processing_time_ms = std::chrono::duration<double, std::milli>(
-        end_time - start_time).count();
+    result.processing_time = std::chrono::duration_cast<std::chrono::microseconds>(
+        end_time - start_time);
     
     // Update statistics
     {
@@ -125,7 +134,8 @@ bool ProjectionEngine::projectToCamera(const std::vector<LiDARPoint>& lidar_poin
     // Transform points to camera coordinate system
     std::vector<cv::Point3f> camera_points;
     std::vector<float> intensities;
-    transformPointsToCamera(lidar_points, camera_data, camera_points, intensities);
+    std::vector<size_t> original_indices;
+    transformPointsToCamera(lidar_points, camera_data, camera_points, intensities, original_indices);
     
     if (camera_points.empty()) {
         return true; // No points to project, but not an error
@@ -133,7 +143,7 @@ bool ProjectionEngine::projectToCamera(const std::vector<LiDARPoint>& lidar_poin
     
     // Apply frustum culling
     if (config_.enable_frustum_culling) {
-        applyFrustumCulling(camera_points, intensities, config_);
+        applyFrustumCulling(camera_points, intensities, original_indices, config_);
     }
     
     if (camera_points.empty()) {
@@ -142,10 +152,12 @@ bool ProjectionEngine::projectToCamera(const std::vector<LiDARPoint>& lidar_poin
     
     // Project to image coordinates
     std::vector<PixelPoint> pixel_points;
-    projectPointsToImage(camera_points, intensities, camera_data, config_, pixel_points);
+    projectPointsToImage(camera_points, intensities, original_indices, camera_data, config_, pixel_points);
     
     // Filter points within image bounds
     filterImageBounds(pixel_points, camera_data.params.image_size, config_.margin_pixels);
+
+    // original_index already propagated through transform/culling/projection
     
     projection.projected_points = std::move(pixel_points);
     return true;
@@ -193,6 +205,9 @@ std::vector<std::string> ProjectionEngine::getCameraIds() const {
         }
     }
     
+    // Sort for consistent ordering
+    std::sort(ids.begin(), ids.end());
+    
     return ids;
 }
 
@@ -236,7 +251,12 @@ size_t ProjectionEngine::reloadCalibration() {
 
 bool ProjectionEngine::loadCameraFromCalibration(const std::string& camera_id) {
     auto calibration = calibration_manager_->getCalibration(camera_id);
-    if (!calibration || !calibration->is_valid) {
+    if (!calibration) {
+        std::cerr << "Calibration not found for " << camera_id << std::endl;
+        return false;
+    }
+    if (!calibration->is_valid) {
+        std::cerr << "Calibration not valid for " << camera_id << std::endl;
         return false;
     }
     
@@ -269,7 +289,8 @@ bool ProjectionEngine::loadCameraFromCalibration(const std::string& camera_id) {
 void ProjectionEngine::transformPointsToCamera(const std::vector<LiDARPoint>& lidar_points,
                                               const CameraData& camera_data,
                                               std::vector<cv::Point3f>& camera_points,
-                                              std::vector<float>& intensities) {
+                                              std::vector<float>& intensities,
+                                              std::vector<size_t>& original_indices) {
     const auto& T_lidar_to_cam = camera_data.params.T_cam_lidar;
     
     // Transpose the matrix for row-vector multiplication (Hungarian style)
@@ -278,6 +299,7 @@ void ProjectionEngine::transformPointsToCamera(const std::vector<LiDARPoint>& li
     
     camera_points.reserve(lidar_points.size());
     intensities.reserve(lidar_points.size());
+    original_indices.reserve(lidar_points.size());
     
     for (const auto& point : lidar_points) {
         // Apply transformation: P_cam = P_lidar * T.T (row vector multiplication)
@@ -292,30 +314,36 @@ void ProjectionEngine::transformPointsToCamera(const std::vector<LiDARPoint>& li
                 static_cast<float>(camera_point.z())
             );
             intensities.push_back(point.intensity);
+            original_indices.push_back(point.original_index);
         }
     }
 }
 
 void ProjectionEngine::applyFrustumCulling(std::vector<cv::Point3f>& camera_points,
                                           std::vector<float>& intensities,
+                                          std::vector<size_t>& original_indices,
                                           const ProjectionConfig& config) {
     auto point_it = camera_points.begin();
     auto intensity_it = intensities.begin();
+    auto index_it = original_indices.begin();
     
     while (point_it != camera_points.end()) {
         // Remove points behind camera (negative Z) or outside depth range
         if (point_it->z <= 0 || point_it->z < config.min_depth || point_it->z > config.max_depth) {
             point_it = camera_points.erase(point_it);
             intensity_it = intensities.erase(intensity_it);
+            index_it = original_indices.erase(index_it);
         } else {
             ++point_it;
             ++intensity_it;
+            ++index_it;
         }
     }
 }
 
 void ProjectionEngine::projectPointsToImage(const std::vector<cv::Point3f>& camera_points,
                                            const std::vector<float>& intensities,
+                                           const std::vector<size_t>& original_indices,
                                            const CameraData& camera_data,
                                            const ProjectionConfig& config,
                                            std::vector<PixelPoint>& pixel_points) {
@@ -355,12 +383,13 @@ void ProjectionEngine::projectPointsToImage(const std::vector<cv::Point3f>& came
     
     // Create pixel points with depth and intensity information
     pixel_points.reserve(image_points.size());
-    for (size_t i = 0; i < image_points.size() && i < camera_points.size(); ++i) {
+    for (size_t i = 0; i < image_points.size() && i < camera_points.size() && i < original_indices.size(); ++i) {
         pixel_points.emplace_back(
             image_points[i].x,
             image_points[i].y,
             camera_points[i].z,
-            intensities[i]
+            intensities[i],
+            original_indices[i]
         );
     }
 }

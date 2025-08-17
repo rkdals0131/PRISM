@@ -65,7 +65,7 @@ public:
         // Initialize InterpolationEngine configuration
         interpolation::InterpolationConfig config;
         config.input_channels = input_channels_;
-        config.output_channels = output_channels_;
+        // no explicit output_channels in config; engine derives from scale_factor
         config.discontinuity_threshold = static_cast<float>(discontinuity_threshold_);
         config.enable_discontinuity_detection = true;
         config.execution_mode = core::ExecutionMode::Mode::SINGLE_THREAD;
@@ -80,7 +80,7 @@ public:
         
         RCLCPP_INFO(this->get_logger(), 
             "InterpolationEngine initialized: %zu -> %zu channels",
-            config.input_channels, config.output_channels);
+            config.input_channels, config.getOutputBeams());
         RCLCPP_INFO(this->get_logger(),
             "  Execution mode: CPU_PARALLEL");
         

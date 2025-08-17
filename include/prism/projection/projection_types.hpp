@@ -12,6 +12,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/point_traits.h>
+#include "prism/utils/common_types.hpp"
 
 namespace prism {
 namespace projection {
@@ -22,10 +23,11 @@ namespace projection {
 struct LiDARPoint {
     float x, y, z;
     float intensity;
+    size_t original_index; // Index in original input cloud order
     
-    LiDARPoint() : x(0), y(0), z(0), intensity(0) {}
-    LiDARPoint(float x_, float y_, float z_, float intensity_ = 0.0f) 
-        : x(x_), y(y_), z(z_), intensity(intensity_) {}
+    LiDARPoint() : x(0), y(0), z(0), intensity(0), original_index(0) {}
+    LiDARPoint(float x_, float y_, float z_, float intensity_ = 0.0f, size_t index_ = 0) 
+        : x(x_), y(y_), z(z_), intensity(intensity_), original_index(index_) {}
 };
 
 /**
@@ -35,10 +37,11 @@ struct PixelPoint {
     float u, v;  // Pixel coordinates
     float depth; // Distance from camera
     float intensity; // Original LiDAR intensity
+    size_t original_index; // Back-reference to original LiDAR point index
     
-    PixelPoint() : u(0), v(0), depth(0), intensity(0) {}
-    PixelPoint(float u_, float v_, float depth_, float intensity_ = 0.0f)
-        : u(u_), v(v_), depth(depth_), intensity(intensity_) {}
+    PixelPoint() : u(0), v(0), depth(0), intensity(0), original_index(0) {}
+    PixelPoint(float u_, float v_, float depth_, float intensity_ = 0.0f, size_t index_ = 0)
+        : u(u_), v(v_), depth(depth_), intensity(intensity_), original_index(index_) {}
     
     // Check if pixel is within image bounds
     bool isWithinBounds(int width, int height) const {
@@ -94,19 +97,17 @@ struct CameraProjection {
 
 /**
  * @brief Complete projection result for all cameras
+ * Now extends BaseResult for common metadata
  */
-struct ProjectionResult {
+struct ProjectionResult : public prism::utils::BaseResult {
     std::vector<CameraProjection> camera_projections;
-    std::chrono::high_resolution_clock::time_point timestamp;
-    size_t total_input_points = 0;
-    size_t total_projected_points = 0;
-    double processing_time_ms = 0.0;
     
-    void clear() {
+    /**
+     * @brief Override clear to handle custom members
+     */
+    void clear() override {
+        prism::utils::BaseResult::clear();  // Call base clear
         camera_projections.clear();
-        total_input_points = 0;
-        total_projected_points = 0;
-        processing_time_ms = 0.0;
     }
     
     // Get projection for specific camera
@@ -156,6 +157,44 @@ struct ProjectionConfig {
     size_t max_threads = 0; // 0 = auto-detect
     
     ProjectionConfig() = default;
+    
+    /**
+     * @brief Load configuration from YAML node
+     */
+    void loadFromYaml(const YAML::Node& node) {
+        using prism::utils::ConfigLoader;
+        
+        // Depth range
+        min_depth = ConfigLoader::readNestedParam(node, 
+            "projection.depth_range.min", min_depth);
+        max_depth = ConfigLoader::readNestedParam(node, 
+            "projection.depth_range.max", max_depth);
+            
+        // Image bounds
+        margin_pixels = ConfigLoader::readNestedParam(node,
+            "projection.image_bounds.margin_pixels", margin_pixels);
+            
+        // Processing options
+        enable_frustum_culling = ConfigLoader::readNestedParam(node,
+            "projection.frustum_culling", enable_frustum_culling);
+        enable_distortion_correction = ConfigLoader::readNestedParam(node,
+            "projection.distortion_correction", enable_distortion_correction);
+            
+        // Performance
+        enable_parallel_processing = ConfigLoader::readNestedParam(node,
+            "projection.parallel_cameras", enable_parallel_processing);
+            
+        // Debug
+        enable_debug_visualization = ConfigLoader::readNestedParam(node,
+            "projection.output_debug_images", enable_debug_visualization);
+    }
+    
+    /**
+     * @brief Validate configuration
+     */
+    bool validate() const {
+        return min_depth > 0 && max_depth > min_depth && margin_pixels >= 0;
+    }
 };
 
 /**
@@ -228,16 +267,17 @@ struct ProjectionStats {
     
     void updateStats(const ProjectionResult& result) {
         total_projections++;
-        total_points_processed += result.total_input_points;
-        total_points_projected += result.total_projected_points;
+        total_points_processed += result.input_count;
+        total_points_projected += result.output_count;
         
-        // Update timing statistics
-        min_processing_time_ms = std::min(min_processing_time_ms, result.processing_time_ms);
-        max_processing_time_ms = std::max(max_processing_time_ms, result.processing_time_ms);
+        // Update timing statistics  
+        double processing_ms = result.getProcessingTimeMs();
+        min_processing_time_ms = std::min(min_processing_time_ms, processing_ms);
+        max_processing_time_ms = std::max(max_processing_time_ms, processing_ms);
         
         // Update average (running average)
         avg_processing_time_ms = (avg_processing_time_ms * (total_projections - 1) + 
-                                 result.processing_time_ms) / total_projections;
+                                 processing_ms) / total_projections;
         
         // Update per-camera statistics
         for (const auto& cam_proj : result.camera_projections) {

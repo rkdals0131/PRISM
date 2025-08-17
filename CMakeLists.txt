@@ -61,7 +61,10 @@ add_library(${PROJECT_NAME}_core SHARED
   src/interpolation/beam_altitude_manager.cpp
   # Phase 3 projection components
   src/projection/projection_engine.cpp
-  # Future Phase 4+ components:
+  # Phase 4 color extraction and fusion components
+  src/projection/color_extractor.cpp
+  src/projection/multi_camera_fusion.cpp
+  # Future Phase 5+ components:
   # src/fusion/prism_fusion.cpp
 )
 
@@ -117,14 +120,56 @@ ament_target_dependencies(prism_projection_debug_node
   rclcpp_components
 )
 
-# Phase 5 Fusion Node (will be added later)
-# add_executable(prism_fusion_node
-#   src/nodes/prism_fusion_node.cpp
-# )
+# Phase 4 Color Extraction Node
+add_executable(prism_color_node
+  src/nodes/prism_color_node.cpp
+)
 
-# target_link_libraries(prism_fusion_node
-#   ${PROJECT_NAME}_core
-# )
+target_link_libraries(prism_color_node
+  ${PROJECT_NAME}_core
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${rclcpp_LIBRARIES}
+  yaml-cpp
+)
+
+ament_target_dependencies(prism_color_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  cv_bridge
+  image_transport
+  pcl_conversions
+  pcl_ros
+  message_filters
+)
+
+# Phase 5 Fusion Node
+add_executable(prism_fusion_node
+  src/nodes/prism_fusion_node.cpp
+)
+
+target_link_libraries(prism_fusion_node
+  ${PROJECT_NAME}_core
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+  ${rclcpp_LIBRARIES}
+  yaml-cpp
+  OpenMP::OpenMP_CXX
+)
+
+ament_target_dependencies(prism_fusion_node
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  cv_bridge
+  image_transport
+  pcl_conversions
+  pcl_ros
+  message_filters
+)
 
 # Dependencies for ROS2 components
 ament_target_dependencies(${PROJECT_NAME}_core
@@ -150,6 +195,8 @@ install(TARGETS
 install(TARGETS
   prism_interpolation_node
   prism_projection_debug_node
+  prism_color_node
+  prism_fusion_node
   DESTINATION lib/${PROJECT_NAME}
 )
 

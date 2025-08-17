@@ -1,6 +1,7 @@
 #include "prism/core/calibration_manager.hpp"
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <algorithm>
 #include <thread>
@@ -120,8 +121,8 @@ bool CalibrationManager::loadCalibration(const std::string& camera_id, const std
         
         // Update average load time (simple exponential moving average)
         double current_time = static_cast<double>(duration.count());
-        double old_avg = stats_.avg_load_time_us.load();
-        stats_.avg_load_time_us.store(old_avg * 0.9 + current_time * 0.1);
+        double old_avg = stats_.avg_load_time_us.get();
+        stats_.avg_load_time_us.set(old_avg * 0.9 + current_time * 0.1);
         
         stats_.total_loads++;
         
@@ -144,6 +145,7 @@ bool CalibrationManager::loadCalibrationFromNode(const std::string& camera_id, c
     try {
         // Parse intrinsic parameters
         if (!parseIntrinsics(yaml_node, *calibration)) {
+            std::cerr << "Failed to parse intrinsics for " << camera_id << std::endl;
             stats_.validation_failures++;
             return false;
         }
@@ -161,6 +163,9 @@ bool CalibrationManager::loadCalibrationFromNode(const std::string& camera_id, c
             stats_.validation_failures++;
             return false;
         }
+        
+        // Call validate() to set is_valid flag
+        calibration->validate();
         
         // Validate if enabled
         if (config_.validate_on_load && !validateCalibration(*calibration)) {
@@ -211,8 +216,8 @@ std::shared_ptr<const CameraCalibration> CalibrationManager::getCalibration(cons
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
         double current_time = static_cast<double>(duration.count());
-        double old_avg = stats_.avg_access_time_us.load();
-        stats_.avg_access_time_us.store(old_avg * 0.9 + current_time * 0.1);
+        double old_avg = stats_.avg_access_time_us.get();
+        stats_.avg_access_time_us.set(old_avg * 0.9 + current_time * 0.1);
         
         return it->second.calibration;
     }
@@ -375,8 +380,16 @@ bool CalibrationManager::parseIntrinsics(const YAML::Node& node, CameraCalibrati
     try {
         // Parse camera matrix
         if (node["camera_matrix"]) {
-            auto K_node = node["camera_matrix"]["data"];
+            YAML::Node K_node;
+            // Support both nested structure with "data" key and direct array
+            if (node["camera_matrix"]["data"]) {
+                K_node = node["camera_matrix"]["data"];
+            } else {
+                K_node = node["camera_matrix"];
+            }
+            
             if (!K_node || K_node.size() != 9) {
+                std::cerr << "Invalid camera matrix size: " << (K_node ? K_node.size() : 0) << std::endl;
                 return false;
             }
             
@@ -419,7 +432,7 @@ bool CalibrationManager::parseExtrinsics(const YAML::Node& node, CameraCalibrati
         if (node["T"] || node["transform"]) {
             auto T_node = node["T"] ? node["T"] : node["transform"];
             
-            if (T_node.size() == 16) {
+            if (T_node.IsSequence() && T_node.size() == 16) {
                 // 4x4 matrix as flat array
                 for (int i = 0; i < 4; ++i) {
                     for (int j = 0; j < 4; ++j) {
@@ -497,7 +510,12 @@ bool CalibrationManager::parseDistortion(const YAML::Node& node, CameraCalibrati
         // Parse distortion coefficients
         YAML::Node dist_node;
         if (node["distortion_coefficients"]) {
-            dist_node = node["distortion_coefficients"]["data"];
+            // Support both nested structure with "data" key and direct array
+            if (node["distortion_coefficients"]["data"]) {
+                dist_node = node["distortion_coefficients"]["data"];
+            } else {
+                dist_node = node["distortion_coefficients"];
+            }
         } else if (node["D"]) {
             dist_node = node["D"];
         } else {

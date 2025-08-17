@@ -29,36 +29,59 @@ def generate_launch_description():
         description='Path to the ROS2 parameters file'
     )
     
-    # PRISM interpolation node (Phase 2)
-    prism_interpolation_node = Node(
+    # PRISM fusion node (Phase 5 - Full Pipeline)
+    prism_fusion_node = Node(
         package='prism',
-        executable='prism_interpolation_node',
-        name='prism_interpolation_node',
+        executable='prism_fusion_node',
+        name='prism_fusion_node',
         output='screen',
-        parameters=[LaunchConfiguration('params_file')],
-        remappings=[
-            ('/ouster/points', '/ouster/points'),
-            ('/prism/interpolated_points', '/prism/interpolated_points')
-        ]
+        parameters=[LaunchConfiguration('params_file')]
+        # remapping 제거 - 모든 토픽 이름은 config 파일에서 설정
     )
     
-    # PRISM fusion node (will be implemented in Phase 5)
-    # prism_fusion_node = Node(
-    #     package='prism',
-    #     executable='prism_fusion_node',
-    #     name='prism_fusion_node',
-    #     output='screen',
-    #     parameters=[LaunchConfiguration('params_file')],
-    #     remappings=[
-    #         ('/ouster/points', '/ouster/points'),
-    #         ('/usb_cam_1/image_raw', '/usb_cam_1/image_raw'),
-    #         ('/usb_cam_2/image_raw', '/usb_cam_2/image_raw'),
-    #         ('/ouster/points/colored', '/ouster/points/colored')
-    #     ]
-    # )
-    
+    # Note: image_transport republish nodes are intentionally NOT launched here.
+    # Use external alias/command when playing rosbag with compressed images.
+    # Optional projection debug node (enabled via arg)
+    enable_debug_arg = DeclareLaunchArgument(
+        'enable_projection_debug',
+        default_value='true',
+        description='Launch projection debug node alongside fusion'
+    )
+
+    projection_debug_node = Node(
+        package='prism',
+        executable='prism_projection_debug_node',
+        name='projection_debug_node',
+        output='screen',
+        parameters=[{
+            'camera_ids': ['camera_1', 'camera_2'],
+            'lidar_topic': '/ouster/points',
+            'output_topic_prefix': '/prism/projection_debug',
+            'calibration_directory': os.path.join(prism_share_dir, 'config'),
+            'time_tolerance_sec': 0.2,
+            'enable_time_sync': True,
+            'enable_status_overlay': True,
+            'point_radius': 3,
+            'overlay_alpha': 0.8,
+            'projection.min_depth': 0.5,
+            'projection.max_depth': 100.0,
+            'projection.margin_pixels': 5,
+            'projection.enable_frustum_culling': True,
+            'projection.enable_distortion_correction': True,
+            'projection.enable_debug_visualization': True,
+        }],
+        remappings=[
+            ('/camera/camera_1/image_raw', '/usb_cam_1/image_raw'),
+            ('/camera/camera_2/image_raw', '/usb_cam_2/image_raw'),
+            ('/camera/camera_1/camera_info', '/usb_cam_1/camera_info'),
+            ('/camera/camera_2/camera_info', '/usb_cam_2/camera_info'),
+        ],
+        condition=None  # always include; enable/disable by parameter internally if needed
+    )
+
     return LaunchDescription([
         params_file_arg,
-        prism_interpolation_node,  # Phase 2 node active
-        # prism_fusion_node  # Will be added in Phase 5
+        enable_debug_arg,
+        projection_debug_node,
+        prism_fusion_node
     ])

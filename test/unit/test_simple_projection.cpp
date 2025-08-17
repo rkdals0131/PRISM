@@ -146,14 +146,14 @@ TEST_F(SimpleProjectionTest, ProjectionStats) {
     
     // Create test results
     ProjectionResult result1;
-    result1.total_input_points = 1000;
-    result1.total_projected_points = 800;
-    result1.processing_time_ms = 10.0;
+    result1.input_count = 1000;
+    result1.output_count = 800;
+    result1.processing_time = std::chrono::microseconds(10000);  // 10.0 ms
     
     ProjectionResult result2;
-    result2.total_input_points = 1000;
-    result2.total_projected_points = 850;
-    result2.processing_time_ms = 12.0;
+    result2.input_count = 1000;
+    result2.output_count = 850;
+    result2.processing_time = std::chrono::microseconds(12000);  // 12.0 ms
     
     // Update stats
     stats.updateStats(result1);

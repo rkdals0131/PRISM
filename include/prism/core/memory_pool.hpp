@@ -8,6 +8,7 @@
 #include <functional>
 #include <new>
 #include <cstddef>
+#include "prism/utils/common_types.hpp"
 
 namespace prism {
 namespace core {
@@ -56,38 +57,73 @@ public:
         size_t max_size = 100;            // Maximum pool size (0 = unlimited)
         bool allow_growth = true;         // Allow dynamic growth
         bool block_when_empty = true;     // Block vs return nullptr when empty
+        
+        /**
+         * @brief Load configuration from YAML node
+         */
+        void loadFromYaml(const YAML::Node& node) {
+            using prism::utils::ConfigLoader;
+            
+            // Calculate based on pool_size in bytes (default 1MB)
+            size_t pool_size_bytes = ConfigLoader::readNestedParam(node,
+                "memory.pool_size", size_t(1048576));
+            
+            // Estimate initial size based on typical object size
+            // Assuming ~10KB per PointCloudSoA object
+            initial_size = pool_size_bytes / 10240;
+            
+            size_t max_pool_bytes = ConfigLoader::readNestedParam(node,
+                "memory.max_pool_size", size_t(10485760));
+            max_size = max_pool_bytes / 10240;
+            
+            allow_growth = ConfigLoader::readNestedParam(node,
+                "memory.allow_dynamic_growth", allow_growth);
+            
+            // Zero-copy implies we should block when empty
+            bool enable_zero_copy = ConfigLoader::readNestedParam(node,
+                "memory.enable_zero_copy", true);
+            block_when_empty = enable_zero_copy;
+        }
+        
+        /**
+         * @brief Validate configuration
+         */
+        bool validate() const {
+            return initial_size > 0 && (max_size == 0 || max_size >= initial_size);
+        }
     };
     
     /**
      * @brief Statistics for monitoring pool usage
+     * Now using BaseMetrics pattern for consistent copying
      */
-    struct Stats {
-        std::atomic<size_t> total_acquisitions{0};
-        std::atomic<size_t> total_releases{0};
-        std::atomic<size_t> current_usage{0};
-        std::atomic<size_t> peak_usage{0};
-        std::atomic<size_t> wait_count{0};        // Times threads had to wait
-        std::atomic<size_t> growth_count{0};       // Times pool was grown
+    class Stats : public prism::utils::BaseMetrics<Stats> {
+    public:
+        prism::utils::AtomicCounter total_acquisitions;
+        prism::utils::AtomicCounter total_releases;
+        prism::utils::AtomicCounter current_usage;
+        prism::utils::AtomicCounter peak_usage;
+        prism::utils::AtomicCounter wait_count;        // Times threads had to wait
+        prism::utils::AtomicCounter growth_count;      // Times pool was grown
         
-        // Copy constructor for returning stats
-        Stats() = default;
-        Stats(const Stats& other) 
-            : total_acquisitions(other.total_acquisitions.load())
-            , total_releases(other.total_releases.load())
-            , current_usage(other.current_usage.load())
-            , peak_usage(other.peak_usage.load())
-            , wait_count(other.wait_count.load())
-            , growth_count(other.growth_count.load()) {}
+        /**
+         * @brief Required implementation for BaseMetrics
+         */
+        void resetImpl() {
+            total_acquisitions.reset();
+            total_releases.reset();
+            current_usage.reset();
+            peak_usage.reset();
+            wait_count.reset();
+            growth_count.reset();
+        }
         
-        // Assignment operator for stats
-        Stats& operator=(const Stats& other) {
-            total_acquisitions = other.total_acquisitions.load();
-            total_releases = other.total_releases.load();
-            current_usage = other.current_usage.load();
-            peak_usage = other.peak_usage.load();
-            wait_count = other.wait_count.load();
-            growth_count = other.growth_count.load();
-            return *this;
+        /**
+         * @brief Get utilization percentage
+         */
+        double getUtilization(size_t pool_size) const {
+            return pool_size > 0 ? 
+                (static_cast<double>(current_usage.get()) / pool_size) * 100.0 : 0.0;
         }
     };
     
@@ -167,10 +203,11 @@ public:
         stats_.total_acquisitions++;
         size_t current = ++stats_.current_usage;
         
-        // Update peak usage
-        size_t peak = stats_.peak_usage.load();
-        while (current > peak && 
-               !stats_.peak_usage.compare_exchange_weak(peak, current)) {
+        // Update peak usage  
+        int64_t peak = stats_.peak_usage.load();
+        int64_t current_int = static_cast<int64_t>(current);
+        while (current_int > peak && 
+               !stats_.peak_usage.compare_exchange_weak(peak, current_int)) {
             // Retry if concurrent update
         }
         

@@ -27,7 +27,7 @@ InterpolationEngine::InterpolationEngine(const InterpolationConfig& config)
     // Configure beam altitude manager
     BeamAltitudeConfig beam_config;
     beam_config.input_beams = config_.input_channels;
-    beam_config.output_beams = config_.output_channels;
+    beam_config.output_beams = config_.getOutputBeams();
     beam_manager_.configure(beam_config);
     
     // Initialize beam altitude manager with OS1-32 specifications
@@ -64,17 +64,26 @@ void InterpolationEngine::configure(const InterpolationConfig& config) {
     // with OS1-32 beam data before it can generate interpolated beams
     BeamAltitudeConfig beam_config;
     beam_config.input_beams = config_.input_channels;
-    beam_config.output_beams = config_.output_channels;
+    beam_config.output_beams = config_.getOutputBeams();
     
     // Create a new beam manager to ensure proper initialization
     beam_manager_ = BeamAltitudeManager(beam_config);
     
-    // The new beam manager constructor should have initialized the OS1-32 beams
-    // and generated interpolated beams, so we don't need to call generateInterpolatedBeams() again
+    // Properly initialize OS1-32 beams and generate interpolated beams
+    try {
+        if (!beam_manager_.initializeOS132Beams()) {
+            throw std::runtime_error("initializeOS132Beams failed");
+        }
+        if (!beam_manager_.generateInterpolatedBeams()) {
+            throw std::runtime_error("generateInterpolatedBeams failed");
+        }
+    } catch (const std::exception& e) {
+        throw; // propagate to caller; configuration invalid
+    }
 }
 
 InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& input) {
-    return interpolate(input, config_.output_channels);
+    return interpolate(input, config_.getOutputBeams());
 }
 
 InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& input, 
@@ -115,52 +124,47 @@ InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& 
         // Clear output cloud
         result.interpolated_cloud->clear();
         
-        // Separate input points by beam/ring
+        // Separate input points by original beams (rings)
         auto beam_start = std::chrono::high_resolution_clock::now();
         auto beam_groups = separateBeams(input);
         auto beam_end = std::chrono::high_resolution_clock::now();
         
         {
             std::lock_guard<std::mutex> lock(metrics_mutex_);
-            metrics_.beam_processing_time += std::chrono::duration_cast<std::chrono::nanoseconds>(beam_end - beam_start);
+            auto beam_duration = std::chrono::duration_cast<std::chrono::nanoseconds>(beam_end - beam_start);
+            double beam_ms = std::chrono::duration<double, std::milli>(beam_duration).count();
+            metrics_.beam_processing_time_ms.set(metrics_.beam_processing_time_ms.get() + beam_ms);
         }
         
-        // Process beams for interpolation (parallel if enabled and beneficial)
+        // Process vertical beams only (no in-beam horizontal densification)
         result.beams_processed = output_channels;
         result.points_per_beam.reserve(output_channels);
         result.beam_altitudes.reserve(output_channels);
         
-        // Use serial processing for simplicity
         for (size_t target_beam = 0; target_beam < output_channels; ++target_beam) {
-            const auto& interpolated_beam = beam_manager_.getInterpolatedBeam(target_beam);
-            
-            if (interpolated_beam.is_original) {
-                // Direct copy for original beams
-                if (interpolated_beam.source_beam_low < beam_groups.size()) {
-                    const auto& beam_indices = beam_groups[interpolated_beam.source_beam_low];
-                    for (size_t idx : beam_indices) {
-                        result.interpolated_cloud->addPoint(
-                            input.x[idx], input.y[idx], input.z[idx], input.intensity[idx],
-                            input.hasColor() ? input.r[idx] : 0,
-                            input.hasColor() ? input.g[idx] : 0,
-                            input.hasColor() ? input.b[idx] : 0,
-                            static_cast<uint16_t>(target_beam)
-                        );
-                    }
-                    result.points_per_beam.push_back(beam_indices.size());
-                } else {
-                    result.points_per_beam.push_back(0);
+            const auto& ib = beam_manager_.getInterpolatedBeam(target_beam);
+            const auto& low = (ib.source_beam_low < beam_groups.size()) ? beam_groups[ib.source_beam_low] : std::vector<size_t>{};
+            const auto& high = (ib.source_beam_high < beam_groups.size()) ? beam_groups[ib.source_beam_high] : std::vector<size_t>{};
+            size_t added = 0;
+            if (ib.is_original) {
+                // Copy original beam points, update ring to target_beam
+                for (size_t idx : low) {
+                    result.interpolated_cloud->addPoint(
+                        input.x[idx], input.y[idx], input.z[idx], input.intensity[idx],
+                        input.hasColor() ? input.r[idx] : 0,
+                        input.hasColor() ? input.g[idx] : 0,
+                        input.hasColor() ? input.b[idx] : 0,
+                        static_cast<uint16_t>(target_beam)
+                    );
+                    ++added;
                 }
             } else {
-                // Interpolate between source beams
-                size_t points_added = processBeam(beam_groups[interpolated_beam.source_beam_low],
-                                                input,
-                                                interpolated_beam.altitude_angle,
-                                                *result.interpolated_cloud);
-                result.points_per_beam.push_back(points_added);
+                added = processBeam(low, high, ib.interpolation_weight, input,
+                                    static_cast<uint16_t>(target_beam),
+                                    *result.interpolated_cloud);
             }
-            
-            result.beam_altitudes.push_back(interpolated_beam.altitude_angle);
+            result.points_per_beam.push_back(added);
+            result.beam_altitudes.push_back(ib.altitude_angle);
         }
         
         auto end_time = std::chrono::high_resolution_clock::now();
@@ -169,10 +173,19 @@ InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& 
         // Update metrics
         {
             std::lock_guard<std::mutex> lock(metrics_mutex_);
-            metrics_.interpolation_time = total_time;
-            metrics_.input_points = input.size();
-            metrics_.output_points = result.interpolated_cloud->size();
-            metrics_.calculateThroughput();
+            double total_ms = std::chrono::duration<double, std::milli>(total_time).count();
+            metrics_.interpolation_time_ms.set(total_ms);
+            metrics_.input_points.set(input.size());
+            metrics_.output_points.set(result.interpolated_cloud->size());
+            
+            // Record throughput operation
+            metrics_.throughput.recordOperation(total_ms, result.interpolated_cloud->size());
+            
+            // Calculate and set interpolation ratio
+            if (input.size() > 0) {
+                double ratio = static_cast<double>(result.interpolated_cloud->size()) / input.size();
+                metrics_.interpolation_ratio.set(ratio);
+            }
         }
         
         result.metrics = metrics_;
@@ -186,50 +199,49 @@ InterpolationResult InterpolationEngine::interpolate(const core::PointCloudSoA& 
     return result;
 }
 
-size_t InterpolationEngine::processBeam(const std::vector<size_t>& beam_indices,
+size_t InterpolationEngine::processBeam(const std::vector<size_t>& beam_indices_low,
+                                      const std::vector<size_t>& beam_indices_high,
+                                      float interpolation_weight,
                                       const core::PointCloudSoA& input,
-                                      float beam_altitude,
+                                      uint16_t target_ring,
                                       core::PointCloudSoA& output) {
-    if (beam_indices.empty() || !interpolator_) {
+    if (!interpolator_) {
         return 0;
     }
-    
-    // Suppress unused parameter warning for now
-    (void)beam_altitude;
-    
-    // Create control points from beam data
-    std::vector<ControlPoint> control_points;
-    control_points.reserve(beam_indices.size());
-    
-    // Sort beam indices by azimuth angle for proper interpolation
-    std::vector<size_t> sorted_indices = beam_indices;
-    // For now, assume they're already sorted. In production, we'd sort by atan2(y, x)
-    
-    for (size_t idx : sorted_indices) {
-        control_points.emplace_back(
-            input.x[idx], input.y[idx], input.z[idx], 
-            input.intensity[idx], 0.0f  // timestamp placeholder
-        );
+    // Match nearest azimuth by angle, not by raw index. Build azimuth-sorted vectors.
+    std::vector<std::pair<float, size_t>> low_by_azimuth;
+    std::vector<std::pair<float, size_t>> high_by_azimuth;
+    low_by_azimuth.reserve(beam_indices_low.size());
+    high_by_azimuth.reserve(beam_indices_high.size());
+    auto azimuth_of = [&input](size_t idx) {
+        return std::atan2(input.y[idx], input.x[idx]);
+    };
+    for (size_t idx : beam_indices_low) {
+        low_by_azimuth.emplace_back(azimuth_of(idx), idx);
     }
-    
-    // Interpolate using Catmull-Rom splines
-    std::vector<ControlPoint> interpolated_points;
-    size_t num_interpolated = std::max(size_t(1), beam_indices.size() * 2); // Double density
-    
-    if (!interpolator_->interpolate(control_points, num_interpolated, interpolated_points)) {
-        return 0;
+    for (size_t idx : beam_indices_high) {
+        high_by_azimuth.emplace_back(azimuth_of(idx), idx);
     }
+    std::sort(low_by_azimuth.begin(), low_by_azimuth.end(), [](auto& a, auto& b){return a.first < b.first;});
+    std::sort(high_by_azimuth.begin(), high_by_azimuth.end(), [](auto& a, auto& b){return a.first < b.first;});
     
-    // Add interpolated points to output cloud
+    const size_t count = std::min(low_by_azimuth.size(), high_by_azimuth.size());
     size_t points_added = 0;
-    for (const auto& point : interpolated_points) {
-        // Adjust Z coordinate based on target beam altitude
-        float adjusted_z = point.z; // In production, adjust based on beam_altitude
-        
-        output.addPoint(point.x, point.y, adjusted_z, point.intensity);
+    for (size_t i = 0; i < count; ++i) {
+        size_t idxL = low_by_azimuth[i].second;
+        size_t idxH = high_by_azimuth[i].second;
+        float w = std::clamp(interpolation_weight, 0.0f, 1.0f);
+        float x = (1.0f - w) * input.x[idxL] + w * input.x[idxH];
+        float y = (1.0f - w) * input.y[idxL] + w * input.y[idxH];
+        float z = (1.0f - w) * input.z[idxL] + w * input.z[idxH];
+        float intensity = (1.0f - w) * input.intensity[idxL] + w * input.intensity[idxH];
+        output.addPoint(x, y, z, intensity,
+                        input.hasColor() ? static_cast<uint8_t>((input.r[idxL] + input.r[idxH]) / 2) : 0,
+                        input.hasColor() ? static_cast<uint8_t>((input.g[idxL] + input.g[idxH]) / 2) : 0,
+                        input.hasColor() ? static_cast<uint8_t>((input.b[idxL] + input.b[idxH]) / 2) : 0,
+                        target_ring);
         ++points_added;
     }
-    
     return points_added;
 }
 
@@ -306,7 +318,7 @@ std::vector<std::vector<size_t>> InterpolationEngine::separateBeams(const core::
 
 
 bool InterpolationEngine::validateConfig(const InterpolationConfig& config) const {
-    if (config.input_channels == 0 || config.output_channels == 0) {
+    if (config.input_channels == 0 || config.scale_factor < 1.0) {
         return false;
     }
     
@@ -362,8 +374,10 @@ void InterpolationEngine::resetMetrics() {
 
 void InterpolationEngine::updateMetrics(std::chrono::nanoseconds duration, size_t discontinuities) {
     std::lock_guard<std::mutex> lock(metrics_mutex_);
-    metrics_.discontinuity_detection_time += duration;
-    metrics_.discontinuities_detected += discontinuities;
+    double duration_ms = std::chrono::duration<double, std::milli>(duration).count();
+    metrics_.discontinuity_detection_time_ms.set(
+        metrics_.discontinuity_detection_time_ms.get() + duration_ms);
+    metrics_.discontinuities_detected.increment(discontinuities);
 }
 
 const InterpolationMetrics& InterpolationEngine::getMetrics() const noexcept {
@@ -395,22 +409,22 @@ size_t calculateOptimalBatchSize(size_t input_size, size_t num_threads) {
 std::string metricsToString(const InterpolationMetrics& metrics) {
     std::ostringstream oss;
     oss << "InterpolationMetrics {\n";
-    oss << "  Interpolation time: " << metrics.interpolation_time.count() << " ns\n";
-    oss << "  Beam processing time: " << metrics.beam_processing_time.count() << " ns\n";
-    oss << "  Discontinuity detection time: " << metrics.discontinuity_detection_time.count() << " ns\n";
-    oss << "  Input points: " << metrics.input_points << "\n";
-    oss << "  Output points: " << metrics.output_points << "\n";
-    oss << "  Discontinuities detected: " << metrics.discontinuities_detected << "\n";
-    oss << "  Interpolation ratio: " << metrics.interpolation_ratio << "\n";
-    oss << "  Throughput: " << metrics.throughput_points_per_second << " points/sec\n";
+    oss << "  Interpolation time: " << metrics.interpolation_time_ms.get() << " ms\n";
+    oss << "  Beam processing time: " << metrics.beam_processing_time_ms.get() << " ms\n";
+    oss << "  Discontinuity detection time: " << metrics.discontinuity_detection_time_ms.get() << " ms\n";
+    oss << "  Input points: " << metrics.input_points.get() << "\n";
+    oss << "  Output points: " << metrics.output_points.get() << "\n";
+    oss << "  Discontinuities detected: " << metrics.discontinuities_detected.get() << "\n";
+    oss << "  Interpolation ratio: " << metrics.interpolation_ratio.get() << "\n";
+    oss << "  Throughput: " << metrics.throughput.getThroughput() << " points/sec\n";
     oss << "}";
     return oss.str();
 }
 
 bool validateOS132Compatibility(const InterpolationConfig& config) {
     return config.input_channels == 32 && 
-           config.output_channels >= 32 && 
-           config.output_channels <= 128;
+           config.scale_factor >= 1.0 && 
+           config.scale_factor <= 4.0;
 }
 
 } // namespace utils

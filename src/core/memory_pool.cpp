@@ -25,12 +25,12 @@ std::unique_ptr<MemoryPool<PointCloudSoA>> createPointCloudPool(size_t initial_s
 std::string formatPoolStats(const MemoryPool<PointCloudSoA>::Stats& stats) {
     std::stringstream ss;
     ss << "MemoryPool Statistics:\n"
-       << "  Total Acquisitions: " << stats.total_acquisitions << "\n"
-       << "  Total Releases: " << stats.total_releases << "\n"
-       << "  Current Usage: " << stats.current_usage << "\n"
-       << "  Peak Usage: " << stats.peak_usage << "\n"
-       << "  Wait Count: " << stats.wait_count << "\n"
-       << "  Growth Count: " << stats.growth_count << "\n";
+       << "  Total Acquisitions: " << stats.total_acquisitions.get() << "\n"
+       << "  Total Releases: " << stats.total_releases.get() << "\n"
+       << "  Current Usage: " << stats.current_usage.get() << "\n"
+       << "  Peak Usage: " << stats.peak_usage.get() << "\n"
+       << "  Wait Count: " << stats.wait_count.get() << "\n"
+       << "  Growth Count: " << stats.growth_count.get() << "\n";
     return ss.str();
 }
 

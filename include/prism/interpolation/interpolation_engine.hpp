@@ -7,10 +7,10 @@
 #include <functional>
 #include <chrono>
 
-
 #include "prism/core/point_cloud_soa.hpp"
 #include "prism/core/memory_pool.hpp"
 #include "prism/core/execution_mode.hpp"
+#include "prism/utils/common_types.hpp"
 #include "catmull_rom_interpolator.hpp"
 #include "beam_altitude_manager.hpp"
 
@@ -22,8 +22,8 @@ namespace interpolation {
  */
 struct InterpolationConfig {
     // OS1-32 specific parameters
-    size_t input_channels = 32;        // OS1-32 has 32 beams
-    size_t output_channels = 96;       // Triple density interpolation
+    size_t input_channels = 32;         // OS1-32 has 32 beams
+    double scale_factor = 2.0;          // Vertical (beam count) scale (e.g., 2.0 => 64)
     
     // Interpolation parameters
     float spline_tension = 0.5f;       // Catmull-Rom tension parameter (0-1)
@@ -35,48 +35,120 @@ struct InterpolationConfig {
     
     // Execution mode
     core::ExecutionMode::Mode execution_mode = core::ExecutionMode::Mode::SINGLE_THREAD;
+    
+    /**
+     * @brief Load configuration from YAML node
+     */
+    void loadFromYaml(const YAML::Node& node) {
+        using prism::utils::ConfigLoader;
+        
+        // Interpolation parameters
+        scale_factor = ConfigLoader::readNestedParam(node, 
+            "interpolation.scale_factor", scale_factor);
+        spline_tension = ConfigLoader::readNestedParam(node, 
+            "interpolation.catmull_rom.tension", spline_tension);
+        enable_discontinuity_detection = ConfigLoader::readNestedParam(node,
+            "interpolation.discontinuity.enabled", enable_discontinuity_detection);
+        discontinuity_threshold = ConfigLoader::readNestedParam(node,
+            "interpolation.discontinuity.threshold", discontinuity_threshold);
+            
+        // Execution mode from performance settings
+        std::string mode = ConfigLoader::readNestedParam(node, 
+            "system.execution_mode", std::string("single_thread"));
+        if (mode == "single_thread" || mode == "multi_thread" || mode == "gpu") {
+            // For now, only single thread is supported
+            // Multi-thread and GPU modes can be added in future
+            execution_mode = core::ExecutionMode::Mode::SINGLE_THREAD;
+        }
+    }
+    
+    /**
+     * @brief Validate configuration
+     */
+    bool validate() const {
+        return input_channels > 0 && 
+               scale_factor >= 1.0 &&
+               spline_tension >= 0.0f && spline_tension <= 1.0f &&
+               discontinuity_threshold > 0.0f;
+    }
+    
+    size_t getOutputBeams() const {
+        return static_cast<size_t>(std::max(1.0, std::round(input_channels * scale_factor)));
+    }
 };
 
 /**
  * @brief Performance metrics for interpolation operations
+ * Now using BaseMetrics pattern for consistent copying
  */
-struct InterpolationMetrics {
-    std::chrono::nanoseconds interpolation_time{0};
-    std::chrono::nanoseconds beam_processing_time{0};
-    std::chrono::nanoseconds discontinuity_detection_time{0};
+class InterpolationMetrics : public prism::utils::BaseMetrics<InterpolationMetrics> {
+public:
+    // Using atomic helpers for thread-safe counters
+    prism::utils::AtomicCounter input_points;
+    prism::utils::AtomicCounter output_points;
+    prism::utils::AtomicCounter discontinuities_detected;
+    prism::utils::ThroughputMetric throughput;
+    prism::utils::AtomicGauge interpolation_ratio;
     
-    size_t input_points{0};
-    size_t output_points{0};
-    size_t discontinuities_detected{0};
-    double interpolation_ratio{0.0};
-    double throughput_points_per_second{0.0};
+    // Timing components (in milliseconds)
+    prism::utils::AtomicGauge interpolation_time_ms;
+    prism::utils::AtomicGauge beam_processing_time_ms;
+    prism::utils::AtomicGauge discontinuity_detection_time_ms;
     
-    void reset() {
-        interpolation_time = std::chrono::nanoseconds{0};
-        beam_processing_time = std::chrono::nanoseconds{0};
-        discontinuity_detection_time = std::chrono::nanoseconds{0};
-        input_points = 0;
-        output_points = 0;
-        discontinuities_detected = 0;
-        interpolation_ratio = 0.0;
-        throughput_points_per_second = 0.0;
+    /**
+     * @brief Required implementation for BaseMetrics
+     */
+    void resetImpl() {
+        input_points.reset();
+        output_points.reset();
+        discontinuities_detected.reset();
+        throughput.reset();
+        interpolation_ratio.reset();
+        interpolation_time_ms.reset();
+        beam_processing_time_ms.reset();
+        discontinuity_detection_time_ms.reset();
     }
     
-    void calculateThroughput() {
-        if (interpolation_time.count() > 0 && output_points > 0) {
-            double seconds = std::chrono::duration<double>(interpolation_time).count();
-            throughput_points_per_second = output_points / seconds;
+    /**
+     * @brief Record a complete interpolation operation
+     */
+    void recordOperation(size_t in_points, size_t out_points, double processing_ms) {
+        input_points.increment(in_points);
+        output_points.increment(out_points);
+        
+        if (in_points > 0) {
+            interpolation_ratio.set(static_cast<double>(out_points) / in_points);
         }
-        if (input_points > 0) {
-            interpolation_ratio = static_cast<double>(output_points) / input_points;
-        }
+        
+        throughput.recordOperation(processing_ms, out_points);
+        interpolation_time_ms.set(processing_ms);
+    }
+    
+    /**
+     * @brief Get performance summary
+     */
+    struct Summary {
+        double throughput_points_sec;
+        double avg_latency_ms;
+        double interpolation_ratio;
+        size_t total_discontinuities;
+    };
+    
+    Summary getSummary() const {
+        return {
+            throughput.getThroughput(),
+            throughput.getAverageLatency(),
+            interpolation_ratio.get(),
+            static_cast<size_t>(discontinuities_detected.get())
+        };
     }
 };
 
 /**
  * @brief Result of interpolation operation
+ * Now extends BaseResult for common metadata
  */
-struct InterpolationResult {
+struct InterpolationResult : public prism::utils::BaseResult {
     core::PooledPtr<core::PointCloudSoA> interpolated_cloud;
     InterpolationMetrics metrics;
     bool success = false;
@@ -86,6 +158,40 @@ struct InterpolationResult {
     size_t beams_processed = 0;
     std::vector<size_t> points_per_beam;
     std::vector<float> beam_altitudes;
+    
+    // Default constructor
+    InterpolationResult() = default;
+    
+    // Move constructor
+    InterpolationResult(InterpolationResult&& other) noexcept = default;
+    
+    // Move assignment
+    InterpolationResult& operator=(InterpolationResult&& other) noexcept = default;
+    
+    // Delete copy operations since we have unique_ptr
+    InterpolationResult(const InterpolationResult&) = delete;
+    InterpolationResult& operator=(const InterpolationResult&) = delete;
+    
+    /**
+     * @brief Override clear to handle custom members
+     */
+    void clear() override {
+        prism::utils::BaseResult::clear();  // Call base clear
+        interpolated_cloud.reset();
+        metrics.reset();
+        success = false;
+        error_message.clear();
+        beams_processed = 0;
+        points_per_beam.clear();
+        beam_altitudes.clear();
+    }
+    
+    /**
+     * @brief Check if result is valid
+     */
+    bool isValid() const {
+        return success && interpolated_cloud && !interpolated_cloud->empty();
+    }
 };
 
 /**
@@ -193,9 +299,12 @@ private:
      * @param output Output cloud to append results
      * @return Number of interpolated points generated
      */
-    size_t processBeam(const std::vector<size_t>& beam_indices,
+    // Vertical (inter-beam) interpolation: blend matched azimuth samples
+    size_t processBeam(const std::vector<size_t>& beam_indices_low,
+                      const std::vector<size_t>& beam_indices_high,
+                      float interpolation_weight,
                       const core::PointCloudSoA& input,
-                      float beam_altitude,
+                      uint16_t target_ring,
                       core::PointCloudSoA& output);
     
     

@@ -14,6 +14,7 @@
 #include <vector>
 #include <yaml-cpp/yaml.h>
 #include <Eigen/Dense>
+#include "prism/utils/common_types.hpp"
 
 namespace prism {
 namespace core {
@@ -125,34 +126,71 @@ public:
             , validate_on_load(true)
             , cache_file_timestamps(true)
             , max_cache_size(100) {}
+            
+        /**
+         * @brief Load configuration from YAML node
+         */
+        void loadFromYaml(const YAML::Node& node) {
+            using prism::utils::ConfigLoader;
+            
+            calibration_directory = ConfigLoader::readNestedParam(node,
+                "calibration.directory", calibration_directory);
+            enable_hot_reload = ConfigLoader::readNestedParam(node,
+                "calibration.auto_reload", enable_hot_reload);
+            
+            validate_on_load = true;  // Always validate
+            cache_file_timestamps = true;  // Always cache
+            max_cache_size = 100;  // Reasonable default
+        }
+        
+        /**
+         * @brief Validate configuration
+         */
+        bool validate() const {
+            return !calibration_directory.empty() && max_cache_size > 0;
+        }
     };
     
     /**
      * @brief Statistics for monitoring calibration manager
+     * Now using BaseMetrics pattern for consistent copying
      */
-    struct Stats {
-        std::atomic<size_t> total_loads{0};
-        std::atomic<size_t> cache_hits{0};
-        std::atomic<size_t> cache_misses{0};
-        std::atomic<size_t> hot_reloads{0};
-        std::atomic<size_t> validation_failures{0};
-        std::atomic<size_t> file_errors{0};
+    class Stats : public prism::utils::BaseMetrics<Stats> {
+    public:
+        prism::utils::AtomicCounter total_loads;
+        prism::utils::AtomicCounter cache_hits;
+        prism::utils::AtomicCounter cache_misses;
+        prism::utils::AtomicCounter hot_reloads;
+        prism::utils::AtomicCounter validation_failures;
+        prism::utils::AtomicCounter file_errors;
         
         // Performance metrics
-        std::atomic<double> avg_load_time_us{0.0};
-        std::atomic<double> avg_access_time_us{0.0};
+        prism::utils::AtomicGauge avg_load_time_us;
+        prism::utils::AtomicGauge avg_access_time_us;
         
-        // Copy constructor for returning stats
-        Stats() = default;
-        Stats(const Stats& other) 
-            : total_loads(other.total_loads.load())
-            , cache_hits(other.cache_hits.load())
-            , cache_misses(other.cache_misses.load())
-            , hot_reloads(other.hot_reloads.load())
-            , validation_failures(other.validation_failures.load())
-            , file_errors(other.file_errors.load())
-            , avg_load_time_us(other.avg_load_time_us.load())
-            , avg_access_time_us(other.avg_access_time_us.load()) {}
+        /**
+         * @brief Required implementation for BaseMetrics
+         */
+        void resetImpl() {
+            total_loads.reset();
+            cache_hits.reset();
+            cache_misses.reset();
+            hot_reloads.reset();
+            validation_failures.reset();
+            file_errors.reset();
+            avg_load_time_us.reset();
+            avg_access_time_us.reset();
+        }
+        
+        /**
+         * @brief Get cache hit rate
+         */
+        double getCacheHitRate() const {
+            int64_t hits = cache_hits.get();
+            int64_t misses = cache_misses.get();
+            int64_t total = hits + misses;
+            return total > 0 ? (static_cast<double>(hits) / total) * 100.0 : 0.0;
+        }
     };
     
     /**
