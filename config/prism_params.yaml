@@ -1,168 +1,7 @@
 # PRISM Unified Configuration
 # Single source of truth for all PRISM parameters
 
-# ===================================================================
-# GLOBAL SETTINGS - Shared across all components
-# ===================================================================
-prism:
-  ros__parameters:
-    # System Configuration
-    system:
-      execution_mode: "multi_thread"     # single_thread, multi_thread, gpu
-      thread_count: -1                   # -1 for auto-detect
-      enable_simd: true
-      enable_debug: false
-      log_level: "info"                  # debug, info, warn, error
-    
-    # Memory Management
-    memory:
-      pool_size: 1048576                 # 1MB default pool size
-      enable_zero_copy: true
-      allow_dynamic_growth: true
-      max_pool_size: 10485760            # 10MB max
-    
-    # Hardware Configuration (Fixed for OS1-32 + 2 Cameras)
-    hardware:
-      lidar:
-        model: "os1_32"
-        channels: 32
-        topic: "/ouster/points"
-      # Camera configuration - flattened for ROS2 compatibility
-      camera_count: 2
-      camera_1:
-        id: "camera_1"
-        topic: "/usb_cam_1/image_raw"
-        enabled: true
-      camera_2:
-        id: "camera_2"  
-        topic: "/usb_cam_2/image_raw"
-        enabled: true
-    
-    # Topics configuration for nodes
-    topics:
-      lidar_input: "/ouster/points"
-      camera_1_input: "/usb_cam_1/image_raw"
-      camera_2_input: "/usb_cam_2/image_raw"
-      colored_output: "/ouster/points/colored"
-      debug_interpolated: "/prism/debug/interpolated"
-    
-    # Calibration Paths
-    calibration:
-      path: "/home/user1/ROS2_Workspace/ros2_ws/src/prism/config"
-      directory: "/home/user1/ROS2_Workspace/ros2_ws/src/prism/config"
-      intrinsic_file: "multi_camera_intrinsic_calibration.yaml"
-      extrinsic_file: "multi_camera_extrinsic_calibration.yaml"
-      auto_reload: false                 # Watch for calibration file changes
-    
-    # ===================================================================
-    # PROCESSING PIPELINE CONFIGURATION
-    # ===================================================================
-    
-    # 1. Interpolation Stage
-    interpolation:
-      enabled: true
-      scale_factor: 2.0                  # vertical: 32 -> 64 channels
-      method: "cubic"                    # linear, cubic, adaptive
-      catmull_rom:
-        tension: 0.5                     # 0.0 = sharp, 1.0 = smooth
-        enable_boundary_handling: true
-      discontinuity:
-        enabled: true
-        threshold: 0.5                   # meters
-        min_points_per_segment: 3
-      output_topic: "/ouster/points/interpolated"
-    
-    # 2. Projection Stage  
-    projection:
-      enabled: true
-      depth_range:
-        min: 0.5                         # meters
-        max: 100.0                       # meters
-      frustum_culling: true              # Remove points behind camera
-      distortion_correction: true        # Apply lens distortion model
-      image_bounds:
-        margin_pixels: 5                 # Border margin for valid projection
-        strict_bounds: false             # Allow slight out-of-bounds
-      parallel_cameras: true             # Process cameras in parallel
-      output_debug_images: false
-    
-    # 3. Color Extraction Stage
-    color_extraction:
-      enabled: true
-      interpolation_method: "bilinear"   # nearest, bilinear, bicubic
-      subpixel_accuracy: true
-      quality:
-        confidence_threshold: 0.7        # [0-1] minimum color confidence
-        enable_blur: false               # Pre-blur for noise reduction
-        blur_kernel_size: 3              # If blur enabled
-      validation:
-        check_pixel_bounds: true
-        reject_invalid_colors: true
-    
-    # 4. Multi-Camera Fusion Stage
-    fusion:
-      enabled: true
-      strategy: "weighted_average"       # average, weighted_average, max_confidence, median
-      weighting:
-        use_distance: true               # Weight by point-to-camera distance
-        use_angle: true                  # Weight by viewing angle
-        use_confidence: true             # Weight by color confidence
-        distance_factor: 1.0
-        angle_factor: 0.5
-        confidence_factor: 2.0
-      outlier_rejection:
-        enabled: true
-        method: "statistical"            # statistical, ransac
-        threshold: 2.0                   # Standard deviations
-      output_topic: "/ouster/points/colored"
-    
-    # ===================================================================
-    # SYNCHRONIZATION & TIMING
-    # ===================================================================
-    synchronization:
-      time_tolerance_sec: 0.1            # Max time difference between sensors
-      enable_time_sync: true
-      drop_old_messages: true
-      queue_size: 10
-      use_approximate_sync: true         # ApproximateTimeSynchronizer
-    
-    # ===================================================================
-    # VISUALIZATION & DEBUG
-    # ===================================================================
-    visualization:
-      enabled: false                     # Set true for debugging
-      point_cloud:
-        point_size: 2
-        color_mode: "rgb"                # rgb, intensity, depth
-      projection_overlay:
-        enabled: true
-        point_radius: 3
-        overlay_alpha: 0.8
-        show_statistics: true
-        fps_display: true
-      debug_topics:
-        interpolated: "/prism/debug/interpolated"
-        projected: "/prism/debug/projected"
-        fusion_stages: "/prism/debug/fusion"
-    
-    # ===================================================================
-    # PERFORMANCE MONITORING
-    # ===================================================================
-    monitoring:
-      enabled: true
-      publish_rate_hz: 1.0               # Metrics publishing rate
-      metrics_topic: "/prism/metrics"
-      track:
-        - "interpolation_throughput"
-        - "projection_latency"
-        - "color_extraction_success_rate"
-        - "fusion_confidence_avg"
-        - "memory_pool_usage"
-        - "thread_utilization"
-      alert_thresholds:
-        max_latency_ms: 50
-        min_throughput_points_sec: 100000
-        max_memory_usage_percent: 80
+# Keep only node-specific parameters. Global block removed to avoid confusion.
 
 # ===================================================================
 # NODE-SPECIFIC OVERRIDES (if needed)
@@ -176,10 +15,19 @@ prism_interpolation_node:
 
 prism_projection_debug_node:
   ros__parameters:
-    visualization:
-      enabled: true      # Always enable visualization for debug node
-      projection_overlay:
-        show_statistics: true
+    lidar_topic: "/ouster/points"
+    output_topic_prefix: "/prism/projection_debug"
+    calibration_directory: "/home/user1/ROS2_Workspace/ros2_ws/install/prism/share/prism/config"
+    time_tolerance_sec: 0.2
+    enable_time_sync: true
+    enable_status_overlay: true
+    point_radius: 3
+    projection.min_depth: 0.5
+    projection.max_depth: 100.0
+    projection.margin_pixels: 5
+    projection.enable_frustum_culling: true
+    projection.enable_distortion_correction: true
+    projection.enable_debug_visualization: true
         
 prism_fusion_node:
   ros__parameters:
@@ -210,6 +58,8 @@ prism_fusion_node:
       output_topic: "/ouster/points/interpolated"
       spline_tension: 0.5
       enable_discontinuity_detection: true
+      grid_mode: true
+      discontinuity_threshold: 0.5
 
     # Projection configuration
     projection:
