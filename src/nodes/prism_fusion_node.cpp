@@ -55,6 +55,8 @@ public:
         declare_parameter("interpolation.input_channels", 32);
         declare_parameter("interpolation.spline_tension", 0.5);
         declare_parameter("interpolation.enable_discontinuity_detection", true);
+        declare_parameter("interpolation.discontinuity_threshold", 0.5);
+        declare_parameter("interpolation.grid_mode", true); // FILC-style row/column grid interpolation
         declare_parameter("interpolation.output_topic", "/ouster/points/interpolated");
         
         // Declare projection parameters
@@ -115,6 +117,9 @@ private:
                 get_parameter("interpolation.enable_discontinuity_detection").as_bool();
             interpolation_config_.input_channels = static_cast<size_t>(std::max(1, input_channels));
             interpolation_config_.scale_factor = std::max(1.0, scale_factor);
+            interpolation_scale_factor_ = interpolation_config_.scale_factor;
+            grid_mode_ = get_parameter("interpolation.grid_mode").as_bool();
+            discontinuity_threshold_ = get_parameter("interpolation.discontinuity_threshold").as_double();
             interpolated_output_topic_ = get_parameter("interpolation.output_topic").as_string();
             
             // Load projection config from parameters
@@ -460,28 +465,128 @@ private:
         // Keep interpolation result alive for the entire callback scope
         interpolation::InterpolationResult interp_result;
         if (interpolation_enabled_) {
-            interp_result = interpolation_engine_->interpolate(soa_cloud);
-            if (!interp_result.success) {
-                RCLCPP_ERROR(get_logger(), "Interpolation failed: %s", interp_result.error_message.c_str());
-                return;
-            }
-            interpolated = interp_result.interpolated_cloud.get();
-            // Publish interpolated cloud
-            if (interpolated_cloud_pub_) {
-                pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_interpolated(new pcl::PointCloud<pcl::PointXYZI>);
-                pcl_interpolated->reserve(interpolated->size());
-                for (size_t i = 0; i < interpolated->size(); ++i) {
-                    pcl::PointXYZI p;
-                    p.x = interpolated->x[i];
-                    p.y = interpolated->y[i];
-                    p.z = interpolated->z[i];
-                    p.intensity = interpolated->intensity[i];
-                    pcl_interpolated->push_back(p);
+            if (grid_mode_) {
+                // FILC-style grid interpolation in-node for debug parity
+                const int input_height = static_cast<int>(interpolation_config_.input_channels);
+                const int input_width = 1024;
+                const int output_height = static_cast<int>(std::round(input_height * interpolation_scale_factor_));
+                // Build a temporary organized grid by nearest neighbor per column
+                std::vector<float> azimuths(soa_cloud.size());
+                for (size_t i = 0; i < soa_cloud.size(); ++i) {
+                    azimuths[i] = std::atan2(soa_cloud.y[i], soa_cloud.x[i]);
                 }
-                sensor_msgs::msg::PointCloud2 interp_msg;
-                pcl::toROSMsg(*pcl_interpolated, interp_msg);
-                interp_msg.header = lidar_msg->header;
-                interpolated_cloud_pub_->publish(interp_msg);
+                std::vector<std::vector<size_t>> by_ring(input_height);
+                // separate by ring (approx if ring missing)
+                for (size_t i = 0; i < soa_cloud.size(); ++i) {
+                    uint16_t ring = 0;
+                    if (soa_cloud.hasRing() && i < soa_cloud.ring.size()) ring = soa_cloud.ring[i];
+                    else {
+                        float elev = std::atan2(soa_cloud.z[i], std::hypot(soa_cloud.x[i], soa_cloud.y[i]));
+                        float norm = (elev + static_cast<float>(M_PI/6)) / static_cast<float>(M_PI/3);
+                        ring = static_cast<uint16_t>(std::min<double>(input_height - 1, std::max<double>(0, std::round(norm * (input_height - 1)))));
+                    }
+                    if (ring < input_height) by_ring[ring].push_back(i);
+                }
+                std::vector<std::pair<float,size_t>> anchors; anchors.reserve(input_width);
+                for (int c = 0; c < input_width; ++c) {
+                    float a = -static_cast<float>(M_PI) + static_cast<float>(2*M_PI) * (static_cast<float>(c)/input_width);
+                    anchors.emplace_back(a, static_cast<size_t>(c));
+                }
+                auto wrap = [](float a){ while(a>=static_cast<float>(M_PI)) a-=static_cast<float>(2*M_PI); while(a<-static_cast<float>(M_PI)) a+=static_cast<float>(2*M_PI); return a; };
+                // grid low
+                std::vector<std::vector<size_t>> grid_idx(input_height, std::vector<size_t>(input_width, static_cast<size_t>(-1)));
+                for (int r = 0; r < input_height; ++r) {
+                    auto& idxs = by_ring[r];
+                    if (idxs.empty()) continue;
+                    std::vector<std::pair<float,size_t>> by_az; by_az.reserve(idxs.size());
+                    for (size_t idx: idxs) by_az.emplace_back(azimuths[idx], idx);
+                    std::sort(by_az.begin(), by_az.end(), [](auto&a,auto&b){return a.first<b.first;});
+                    size_t j=0;
+                    for (int c = 0; c < input_width; ++c) {
+                        float tgt = anchors[c].first;
+                        while (j+1<by_az.size() && std::abs(wrap(by_az[j+1].first - tgt)) <= std::abs(wrap(by_az[j].first - tgt))) ++j;
+                        grid_idx[r][c] = by_az[j].second;
+                    }
+                }
+                // interpolate rows into a fixed-size grid (row-major)
+                const size_t out_size = static_cast<size_t>(output_height) * input_width;
+                std::vector<float> gx(out_size, 0.0f), gy(out_size, 0.0f), gz(out_size, 0.0f), gi(out_size, 0.0f);
+                auto set_cell = [&](int rr, int cc, float x, float y, float z, float inten){
+                    if (rr < 0 || rr >= output_height) return; if (cc < 0 || cc >= input_width) return;
+                    size_t idx = static_cast<size_t>(rr) * input_width + cc;
+                    gx[idx]=x; gy[idx]=y; gz[idx]=z; gi[idx]=inten;
+                };
+                double thresh = discontinuity_threshold_;
+                for (int r = 0; r < input_height-1; ++r) {
+                    for (int c = 0; c < input_width; ++c) {
+                        size_t i1 = grid_idx[r][c], i2 = grid_idx[r+1][c];
+                        if (i1==(size_t)-1 || i2==(size_t)-1) continue;
+                        // copy base row into target row slot
+                        int base_out_row = static_cast<int>(std::round(r * interpolation_scale_factor_));
+                        set_cell(base_out_row, c, soa_cloud.x[i1], soa_cloud.y[i1], soa_cloud.z[i1], soa_cloud.intensity[i1]);
+                        int inserts = static_cast<int>(std::max(1.0, interpolation_scale_factor_)) - 1;
+                        float r1 = std::hypot(soa_cloud.x[i1], std::hypot(soa_cloud.y[i1], soa_cloud.z[i1]));
+                        float r2 = std::hypot(soa_cloud.x[i2], std::hypot(soa_cloud.y[i2], soa_cloud.z[i2]));
+                        bool discontinuous = std::abs(r2-r1) > thresh;
+                        for (int k=1;k<=inserts;++k){
+                            float t = static_cast<float>(k)/(inserts+1);
+                            if (discontinuous) {
+                                const size_t is = (t<0.5f)? i1:i2;
+                                set_cell(base_out_row + k, c, soa_cloud.x[is], soa_cloud.y[is], soa_cloud.z[is], soa_cloud.intensity[is]);
+                            } else {
+                                float x = (1.0f-t)*soa_cloud.x[i1] + t*soa_cloud.x[i2];
+                                float y = (1.0f-t)*soa_cloud.y[i1] + t*soa_cloud.y[i2];
+                                float z = (1.0f-t)*soa_cloud.z[i1] + t*soa_cloud.z[i2];
+                                float inten = (1.0f-t)*soa_cloud.intensity[i1] + t*soa_cloud.intensity[i2];
+                                set_cell(base_out_row + k, c, x,y,z,inten);
+                            }
+                        }
+                    }
+                }
+                // last input row copy
+                int last_in = input_height - 1;
+                int last_out = static_cast<int>(std::round(last_in * interpolation_scale_factor_));
+                for (int c=0;c<input_width;++c){
+                    size_t iL = grid_idx[last_in][c]; if (iL==(size_t)-1) continue;
+                    set_cell(last_out, c, soa_cloud.x[iL], soa_cloud.y[iL], soa_cloud.z[iL], soa_cloud.intensity[iL]);
+                }
+                // flatten to SoA
+                core::PointCloudSoA grid_out; grid_out.reserve(out_size);
+                for (size_t idx=0; idx<out_size; ++idx) {
+                    grid_out.addPoint(gx[idx], gy[idx], gz[idx], gi[idx]);
+                }
+                // use grid_out as interpolated
+                interp_result.success = true;
+                interp_result.interpolated_cloud = core::PooledPtr<core::PointCloudSoA>(new core::PointCloudSoA(std::move(grid_out)), core::PoolDeleter<core::PointCloudSoA>{nullptr});
+                interpolated = interp_result.interpolated_cloud.get();
+                // publish
+                if (interpolated_cloud_pub_) {
+                    pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_interpolated(new pcl::PointCloud<pcl::PointXYZI>);
+                    pcl_interpolated->reserve(interpolated->size());
+                    for (size_t i = 0; i < interpolated->size(); ++i) {
+                        pcl::PointXYZI p{interpolated->x[i], interpolated->y[i], interpolated->z[i], interpolated->intensity[i]};
+                        pcl_interpolated->push_back(p);
+                    }
+                    sensor_msgs::msg::PointCloud2 interp_msg; pcl::toROSMsg(*pcl_interpolated, interp_msg);
+                    interp_msg.header = lidar_msg->header; interpolated_cloud_pub_->publish(interp_msg);
+                }
+            } else {
+                interp_result = interpolation_engine_->interpolate(soa_cloud);
+                if (!interp_result.success) {
+                    RCLCPP_ERROR(get_logger(), "Interpolation failed: %s", interp_result.error_message.c_str());
+                    return;
+                }
+                interpolated = interp_result.interpolated_cloud.get();
+                if (interpolated_cloud_pub_) {
+                    pcl::PointCloud<pcl::PointXYZI>::Ptr pcl_interpolated(new pcl::PointCloud<pcl::PointXYZI>);
+                    pcl_interpolated->reserve(interpolated->size());
+                    for (size_t i = 0; i < interpolated->size(); ++i) {
+                        pcl::PointXYZI p{interpolated->x[i], interpolated->y[i], interpolated->z[i], interpolated->intensity[i]};
+                        pcl_interpolated->push_back(p);
+                    }
+                    sensor_msgs::msg::PointCloud2 interp_msg; pcl::toROSMsg(*pcl_interpolated, interp_msg);
+                    interp_msg.header = lidar_msg->header; interpolated_cloud_pub_->publish(interp_msg);
+                }
             }
         } else {
             // No interpolation: operate directly on input SoA
@@ -655,6 +760,9 @@ private:
     std::string debug_interpolated_topic_;
     std::string interpolated_output_topic_;
     bool interpolation_enabled_ {false};
+    bool grid_mode_ {true};
+    double interpolation_scale_factor_ {2.0};
+    double discontinuity_threshold_ {0.5};
     int sync_queue_size_ {3};
     int min_interval_ms_ {100};
     interpolation::InterpolationConfig interpolation_config_;
