@@ -768,8 +768,8 @@ private:
                     point.g = rgb[1];
                     point.b = rgb[2];
                 } else {
-                    // Default gray for uncolored points
-                    point.r = point.g = point.b = 128;
+                    // Default white for uncolored points (better visibility)
+                    point.r = point.g = point.b = 255;
                 }
                 
                 colored_cloud->push_back(point);
@@ -1144,7 +1144,7 @@ private:
                     const auto& rgb = fusion_result.fused_colors[i];
                     point.r = rgb[0]; point.g = rgb[1]; point.b = rgb[2];
                 } else {
-                    point.r = point.g = point.b = 128;
+                    point.r = point.g = point.b = 255;
                 }
                 colored_cloud->push_back(point);
             }

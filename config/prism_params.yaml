@@ -74,6 +74,6 @@ prism_fusion_node:
     # Fusion configuration
     fusion:
       strategy: "weighted_average"
-      confidence_threshold: 0.3
+      confidence_threshold: 0.5
       distance_weight_factor: 1.0
       enable_outlier_rejection: true
