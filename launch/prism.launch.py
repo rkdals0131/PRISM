@@ -41,7 +41,7 @@ def generate_launch_description():
     
     # Note: image_transport republish nodes are intentionally NOT launched here.
     # Use external alias/command when playing rosbag with compressed images.
-    # Projection debug node (params come from YAML only)
+    # Projection debug node (params strictly from YAML only)
     projection_debug_node = Node(
         package='prism',
         executable='prism_projection_debug_node',
@@ -53,8 +53,7 @@ def generate_launch_description():
             ('/camera/camera_2/image_raw', '/usb_cam_2/image_raw'),
             ('/camera/camera_1/camera_info', '/usb_cam_1/camera_info'),
             ('/camera/camera_2/camera_info', '/usb_cam_2/camera_info'),
-        ],
-        condition=None
+        ]
     )
 
     return LaunchDescription([

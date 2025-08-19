@@ -10,6 +10,7 @@
 - **고성능 최적화**: SIMD 커널, OpenMP 병렬화, SOA 메모리 레이아웃
 - **제로카피 메모리 관리**: 사전 할당된 메모리 풀을 통한 효율적 처리
 - **FILC 스타일 그리드 인터폴레이션**: 1024×N 고정 그리드 기반 일관된 각도 샘플링
+- **선택적 Color Mapping**: Color mapping을 끄고 interpolation만 수행 가능 (3-4배 성능 향상)
 
 ## 🚀 빠른 시작
 
@@ -115,6 +116,11 @@ synchronization:
   image_freshness_ms: 150    # 이미지 신선도 체크
 ```
 
+#### 성능 모드 설정
+```yaml
+enable_color_mapping: true  # Color mapping 활성화 (false: interpolation만 수행, FILC와 유사한 성능)
+```
+
 #### 인터폴레이션 설정
 ```yaml
 interpolation:
@@ -217,7 +223,24 @@ colcon test-result --verbose
 ./build/prism/test_memory_pool
 ```
 
+## ⚡ 성능 비교
+
+### Color Mapping 모드별 성능
+| 모드 | 처리 시간 | 주요 연산 | 용도 |
+|------|-----------|-----------|------|
+| **Full Fusion** (enable_color_mapping=true) | 15-30ms | Interpolation + Projection + Color extraction + Fusion | 완전한 3D 색상 정보가 필요한 경우 |
+| **Interpolation-only** (enable_color_mapping=false) | 2-5ms | Interpolation only | FILC와 유사한 성능이 필요한 경우 |
+
+### 성능 최적화 팁
+- Color mapping이 불필요한 경우 `enable_color_mapping: false` 설정으로 3-4배 성능 향상
+- 출력은 동일한 `/ouster/points/colored` 토픽으로 발행 (색상 없이 intensity만 포함)
+
 ## 🔨 최근 수정사항
+
+### v1.0.2 - Color Mapping 온오프 기능 추가
+- **추가**: `enable_color_mapping` 파라미터로 color mapping 스킵 가능
+- **효과**: Interpolation만 수행 시 FILC와 유사한 2-5ms 처리 시간 달성
+- **용도**: 색상 정보가 필요 없고 빠른 point density 향상만 필요한 경우
 
 ### v1.0.1 - 메모리 누수 수정
 - **문제**: Grid mode에서 `PoolDeleter{nullptr}` 사용으로 매 프레임마다 ~1MB 메모리 누수

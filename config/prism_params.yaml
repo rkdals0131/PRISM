@@ -17,7 +17,7 @@ projection_debug_node:
     projection.margin_pixels: 5
     projection.enable_frustum_culling: true
     projection.enable_distortion_correction: true
-    projection.enable_debug_visualization: true
+    projection.enable_debug_visualization: false
         
 prism_fusion_node:
   ros__parameters:
@@ -39,6 +39,9 @@ prism_fusion_node:
     synchronization:
       queue_size: 1
       min_interval_ms: 0
+
+    # Color mapping control (NEW)
+    enable_color_mapping: true  # Set to false for interpolation-only mode (FILC-like performance)
 
     # Interpolation disabled (use raw points)
     interpolation:

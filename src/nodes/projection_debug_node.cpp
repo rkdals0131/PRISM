@@ -296,12 +296,17 @@ void ProjectionDebugNode::setupROS() {
         
         camera_subscribers_.emplace(camera_id, std::move(camera_sub));
         
-        // Visualization publisher (raw image only, no compressed/theora plugins)
-        std::string vis_topic = output_topic_prefix_ + "/" + camera_id;
-        visualization_publishers_[camera_id] = this->create_publisher<sensor_msgs::msg::Image>(vis_topic, rclcpp::QoS(10).reliable());
-        
-        RCLCPP_INFO(this->get_logger(), "Setup camera %s: %s -> %s", 
-                   camera_id.c_str(), camera_topic.c_str(), vis_topic.c_str());
+        // Visualization publisher (created only when debug visualization is enabled)
+        std::string vis_topic;
+        if (projection_config_.enable_debug_visualization) {
+            vis_topic = output_topic_prefix_ + "/" + camera_id;
+            visualization_publishers_[camera_id] = this->create_publisher<sensor_msgs::msg::Image>(vis_topic, rclcpp::QoS(10).reliable());
+            RCLCPP_INFO(this->get_logger(), "Setup camera %s: %s -> %s", 
+                       camera_id.c_str(), camera_topic.c_str(), vis_topic.c_str());
+        } else {
+            RCLCPP_INFO(this->get_logger(), "Setup camera %s: %s (debug visualization disabled)", 
+                       camera_id.c_str(), camera_topic.c_str());
+        }
     }
     
     // Statistics publisher
@@ -368,8 +373,10 @@ void ProjectionDebugNode::processProjection(const sensor_msgs::msg::PointCloud2:
         return;
     }
     
-    // Create and publish visualization
-    publishVisualization(result, cloud_msg->header.stamp);
+    // Create and publish visualization if enabled
+    if (projection_config_.enable_debug_visualization) {
+        publishVisualization(result, cloud_msg->header.stamp);
+    }
     
     // Update statistics
     successful_projections_++;

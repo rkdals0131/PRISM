@@ -192,8 +192,9 @@ struct ProjectionConfig {
             "projection.max_points", max_points_per_frame);
             
         // Debug
-        enable_debug_visualization = ConfigLoader::readNestedParam(node,
-            "projection.output_debug_images", enable_debug_visualization);
+        // Unified key: projection.enable_debug_visualization
+        enable_debug_visualization = ConfigLoader::readNestedParam(
+            node, "projection.enable_debug_visualization", enable_debug_visualization);
     }
     
     /**

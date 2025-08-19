@@ -88,6 +88,9 @@ public:
         // Declare debug parameters
         declare_parameter("enable_debug", false);
         
+        // Declare color mapping control parameter
+        declare_parameter("enable_color_mapping", true);
+        
         // Load configuration from parameters
         loadConfiguration();
         
@@ -115,6 +118,9 @@ private:
             use_latest_image_ = get_parameter("synchronization.use_latest_image").as_bool();
             image_freshness_ms_ = static_cast<int>(get_parameter("synchronization.image_freshness_ms").as_int());
 
+            // Load color mapping control
+            enable_color_mapping_ = get_parameter("enable_color_mapping").as_bool();
+            
             // Load interpolation config from parameters
             interpolation_enabled_ = get_parameter("interpolation.enabled").as_bool();
             const double scale_factor = get_parameter("interpolation.scale_factor").as_double();
@@ -628,160 +634,195 @@ private:
         }
         auto t_after_interpolation = std::chrono::high_resolution_clock::now();
         
-        // Step 2: Projection (Phase 3)
-        std::map<std::string, cv::Mat> camera_images;
-        cv_bridge::CvImagePtr cv_img1, cv_img2;
-        try {
-            cv_img1 = cv_bridge::toCvCopy(img1, sensor_msgs::image_encodings::BGR8);
-            cv_img2 = cv_bridge::toCvCopy(img2, sensor_msgs::image_encodings::BGR8);
-            camera_images[camera_configs_[0].id] = cv_img1->image;
-            camera_images[camera_configs_[1].id] = cv_img2->image;
-        } catch (cv_bridge::Exception& e) {
-            RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
-            return;
-        }
+        // Variables for timing (declare outside to avoid scope issues)
+        std::chrono::high_resolution_clock::time_point t_after_projection;
+        std::chrono::high_resolution_clock::time_point t_after_fusion;
+        size_t successful_fusions = 0;
         
-        // Convert PointCloudSoA to LiDARPoint vector (preserve original indices)
-        std::vector<projection::LiDARPoint> lidar_points;
-        lidar_points.reserve(interpolated->size());
-        for (size_t i = 0; i < interpolated->size(); ++i) {
-            lidar_points.emplace_back(
-                interpolated->x[i], 
-                interpolated->y[i], 
-                interpolated->z[i],
-                1.0f,  // Default intensity
-                i      // Preserve original index
-            );
-        }
-        
-        projection::ProjectionResult projection_results;
-        if (!projection_engine_->projectToAllCameras(lidar_points, projection_results)) {
-            RCLCPP_ERROR(get_logger(), "Projection failed");
-            return;
-        }
-        auto t_after_projection = std::chrono::high_resolution_clock::now();
-        
-        // Step 3: Color Extraction (Phase 4)
-        std::map<std::string, projection::ColorExtractor::ColorExtractionResult> extraction_results;
-        std::map<std::string, std::vector<float>> pixel_distances;
-        
-        const size_t total_points = interpolated->size();
-        for (const auto& cam_proj : projection_results.camera_projections) {
-            // Convert PixelPoint to cv::Point2f and preserve original point indices
-            std::vector<cv::Point2f> pixel_coordinates;
-            std::vector<size_t> point_indices;
-            pixel_coordinates.reserve(cam_proj.projected_points.size());
-            point_indices.reserve(cam_proj.projected_points.size());
-            
-            for (size_t i = 0; i < cam_proj.projected_points.size(); ++i) {
-                const auto& pixel_point = cam_proj.projected_points[i];
-                pixel_coordinates.emplace_back(pixel_point.u, pixel_point.v);
-                // Use original LiDAR point index
-                point_indices.push_back(pixel_point.original_index);
+        // Check if color mapping is enabled
+        if (enable_color_mapping_) {
+            // Step 2: Projection (Phase 3)
+            std::map<std::string, cv::Mat> camera_images;
+            cv_bridge::CvImagePtr cv_img1, cv_img2;
+            try {
+                cv_img1 = cv_bridge::toCvCopy(img1, sensor_msgs::image_encodings::BGR8);
+                cv_img2 = cv_bridge::toCvCopy(img2, sensor_msgs::image_encodings::BGR8);
+                camera_images[camera_configs_[0].id] = cv_img1->image;
+                camera_images[camera_configs_[1].id] = cv_img2->image;
+            } catch (cv_bridge::Exception& e) {
+                RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+                return;
             }
             
-            // Extract colors
-            auto sparse_result = color_extractor_->extractColorsWithIndices(
-                camera_images[cam_proj.camera_id], 
-                pixel_coordinates,
-                point_indices,
-                extraction_config_);
-            
-            // Remap to dense per-original-index arrays for fusion
-            projection::ColorExtractor::ColorExtractionResult dense_result;
-            dense_result.colors.assign(total_points, cv::Vec3b(0, 0, 0));
-            dense_result.confidence_scores.assign(total_points, 0.0f);
-            dense_result.valid_extractions.assign(total_points, false);
-            dense_result.output_count = total_points;
-            dense_result.valid_colors = 0;
-            
-            // sparse_result: vectors are aligned to pixel_coordinates; point_indices[k] is original index
-            for (size_t k = 0; k < point_indices.size() && k < sparse_result.colors.size(); ++k) {
-                const size_t orig_idx = point_indices[k];
-                if (orig_idx >= total_points) { continue; }
-                dense_result.colors[orig_idx] = sparse_result.colors[k];
-                dense_result.confidence_scores[orig_idx] = sparse_result.confidence_scores[k];
-                dense_result.valid_extractions[orig_idx] = sparse_result.valid_extractions[k];
-                if (sparse_result.valid_extractions[k]) {
-                    dense_result.valid_colors++;
-                }
+            // Convert PointCloudSoA to LiDARPoint vector (preserve original indices)
+            std::vector<projection::LiDARPoint> lidar_points;
+            lidar_points.reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                lidar_points.emplace_back(
+                    interpolated->x[i], 
+                    interpolated->y[i], 
+                    interpolated->z[i],
+                    1.0f,  // Default intensity
+                    i      // Preserve original index
+                );
             }
-            extraction_results[cam_proj.camera_id] = std::move(dense_result);
             
-            // Calculate pixel distances from optical center
-            auto calibration = calibration_manager_->getCalibration(cam_proj.camera_id);
-            if (calibration) {
-                double cx = calibration->K(0, 2);
-                double cy = calibration->K(1, 2);
+            projection::ProjectionResult projection_results;
+            if (!projection_engine_->projectToAllCameras(lidar_points, projection_results)) {
+                RCLCPP_ERROR(get_logger(), "Projection failed");
+                return;
+            }
+            t_after_projection = std::chrono::high_resolution_clock::now();
+            
+            // Step 3: Color Extraction (Phase 4)
+            std::map<std::string, projection::ColorExtractor::ColorExtractionResult> extraction_results;
+            std::map<std::string, std::vector<float>> pixel_distances;
+            
+            const size_t total_points = interpolated->size();
+            for (const auto& cam_proj : projection_results.camera_projections) {
+                // Convert PixelPoint to cv::Point2f and preserve original point indices
+                std::vector<cv::Point2f> pixel_coordinates;
+                std::vector<size_t> point_indices;
+                pixel_coordinates.reserve(cam_proj.projected_points.size());
+                point_indices.reserve(cam_proj.projected_points.size());
                 
-                std::vector<float> dense_distances(total_points, 0.0f);
-                for (size_t k = 0; k < point_indices.size() && k < pixel_coordinates.size(); ++k) {
+                for (size_t i = 0; i < cam_proj.projected_points.size(); ++i) {
+                    const auto& pixel_point = cam_proj.projected_points[i];
+                    pixel_coordinates.emplace_back(pixel_point.u, pixel_point.v);
+                    // Use original LiDAR point index
+                    point_indices.push_back(pixel_point.original_index);
+                }
+                
+                // Extract colors
+                auto sparse_result = color_extractor_->extractColorsWithIndices(
+                    camera_images[cam_proj.camera_id], 
+                    pixel_coordinates,
+                    point_indices,
+                    extraction_config_);
+                
+                // Remap to dense per-original-index arrays for fusion
+                projection::ColorExtractor::ColorExtractionResult dense_result;
+                dense_result.colors.assign(total_points, cv::Vec3b(0, 0, 0));
+                dense_result.confidence_scores.assign(total_points, 0.0f);
+                dense_result.valid_extractions.assign(total_points, false);
+                dense_result.output_count = total_points;
+                dense_result.valid_colors = 0;
+                
+                // sparse_result: vectors are aligned to pixel_coordinates; point_indices[k] is original index
+                for (size_t k = 0; k < point_indices.size() && k < sparse_result.colors.size(); ++k) {
                     const size_t orig_idx = point_indices[k];
                     if (orig_idx >= total_points) { continue; }
-                    const auto& pixel = pixel_coordinates[k];
-                    float dx = pixel.x - static_cast<float>(cx);
-                    float dy = pixel.y - static_cast<float>(cy);
-                    dense_distances[orig_idx] = std::sqrt(dx*dx + dy*dy);
+                    dense_result.colors[orig_idx] = sparse_result.colors[k];
+                    dense_result.confidence_scores[orig_idx] = sparse_result.confidence_scores[k];
+                    dense_result.valid_extractions[orig_idx] = sparse_result.valid_extractions[k];
+                    if (sparse_result.valid_extractions[k]) {
+                        dense_result.valid_colors++;
+                    }
                 }
-                pixel_distances[cam_proj.camera_id] = std::move(dense_distances);
-            }
-        }
-        
-        // Step 4: Multi-Camera Fusion (Phase 4)
-        std::vector<size_t> all_indices;
-        for (size_t i = 0; i < interpolated->size(); ++i) {
-            all_indices.push_back(i);
-        }
-        
-        auto fusion_result = multi_camera_fusion_->fuseColorsWithDistances(
-            extraction_results, pixel_distances, all_indices, fusion_config_);
-        auto t_after_fusion = std::chrono::high_resolution_clock::now();
-        
-        // Step 5: Create colored point cloud
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-        colored_cloud->reserve(interpolated->size());
-        
-        for (size_t i = 0; i < interpolated->size(); ++i) {
-            pcl::PointXYZRGB point;
-            point.x = interpolated->x[i];
-            point.y = interpolated->y[i];
-            point.z = interpolated->z[i];
-            
-            if (i < fusion_result.fused_colors.size() && 
-                fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
-                const auto& rgb = fusion_result.fused_colors[i];
-                // Colors are stored as RGB in extraction/fusion results
-                point.r = rgb[0];
-                point.g = rgb[1];
-                point.b = rgb[2];
-            } else {
-                // Default gray for uncolored points
-                point.r = point.g = point.b = 128;
+                extraction_results[cam_proj.camera_id] = std::move(dense_result);
+                
+                // Calculate pixel distances from optical center
+                auto calibration = calibration_manager_->getCalibration(cam_proj.camera_id);
+                if (calibration) {
+                    double cx = calibration->K(0, 2);
+                    double cy = calibration->K(1, 2);
+                    
+                    std::vector<float> dense_distances(total_points, 0.0f);
+                    for (size_t k = 0; k < point_indices.size() && k < pixel_coordinates.size(); ++k) {
+                        const size_t orig_idx = point_indices[k];
+                        if (orig_idx >= total_points) { continue; }
+                        const auto& pixel = pixel_coordinates[k];
+                        float dx = pixel.x - static_cast<float>(cx);
+                        float dy = pixel.y - static_cast<float>(cy);
+                        dense_distances[orig_idx] = std::sqrt(dx*dx + dy*dy);
+                    }
+                    pixel_distances[cam_proj.camera_id] = std::move(dense_distances);
+                }
             }
             
-            colored_cloud->push_back(point);
+            // Step 4: Multi-Camera Fusion (Phase 4)
+            std::vector<size_t> all_indices;
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                all_indices.push_back(i);
+            }
+            
+            auto fusion_result = multi_camera_fusion_->fuseColorsWithDistances(
+                extraction_results, pixel_distances, all_indices, fusion_config_);
+            t_after_fusion = std::chrono::high_resolution_clock::now();
+            successful_fusions = fusion_result.successful_fusions;
+            
+            // Step 5: Create colored point cloud
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+            colored_cloud->reserve(interpolated->size());
+            
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                pcl::PointXYZRGB point;
+                point.x = interpolated->x[i];
+                point.y = interpolated->y[i];
+                point.z = interpolated->z[i];
+                
+                if (i < fusion_result.fused_colors.size() && 
+                    fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
+                    const auto& rgb = fusion_result.fused_colors[i];
+                    // Colors are stored as RGB in extraction/fusion results
+                    point.r = rgb[0];
+                    point.g = rgb[1];
+                    point.b = rgb[2];
+                } else {
+                    // Default gray for uncolored points
+                    point.r = point.g = point.b = 128;
+                }
+                
+                colored_cloud->push_back(point);
+            }
+            
+            // Publish colored point cloud
+            sensor_msgs::msg::PointCloud2 output_msg;
+            pcl::toROSMsg(*colored_cloud, output_msg);
+            output_msg.header = lidar_msg->header;
+            colored_cloud_pub_->publish(output_msg);
+        } else {
+            // Interpolation-only mode: publish interpolated cloud without colors
+            pcl::PointCloud<pcl::PointXYZI>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            output_cloud->reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                pcl::PointXYZI point;
+                point.x = interpolated->x[i];
+                point.y = interpolated->y[i];
+                point.z = interpolated->z[i];
+                point.intensity = interpolated->intensity[i];
+                output_cloud->push_back(point);
+            }
+            
+            sensor_msgs::msg::PointCloud2 output_msg; 
+            pcl::toROSMsg(*output_cloud, output_msg);
+            output_msg.header = lidar_msg->header; 
+            colored_cloud_pub_->publish(output_msg);
+            
+            RCLCPP_INFO_ONCE(get_logger(), 
+                "PRISM running in interpolation-only mode (color mapping disabled) [sync]");
         }
-        
-        // Publish colored point cloud
-        sensor_msgs::msg::PointCloud2 output_msg;
-        pcl::toROSMsg(*colored_cloud, output_msg);
-        output_msg.header = lidar_msg->header;
-        colored_cloud_pub_->publish(output_msg);
         auto t_after_publish = std::chrono::high_resolution_clock::now();
         
         // Calculate and log performance metrics
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - t_start);
         
-        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-            "PRISM Fusion Pipeline: %ld ms total | "
-            "Points: %zu | Colored: %zu (%.1f%%) | "
-            "Cameras contributing: %zu",
-            duration.count(), 
-            interpolated->size(),
-            fusion_result.successful_fusions,
-            100.0f * fusion_result.successful_fusions / std::max(size_t(1), interpolated->size()),
-            fusion_result.camera_contribution_count.size());
+        // Log performance based on mode
+        if (enable_color_mapping_) {
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                "PRISM Fusion Pipeline: %ld ms total | "
+                "Points: %zu | Colored: %zu (%.1f%%)",
+                duration.count(), 
+                interpolated->size(),
+                successful_fusions,
+                100.0f * successful_fusions / std::max(size_t(1), interpolated->size()));
+        } else {
+            RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+                "PRISM Interpolation-only: %ld ms | Points: %zu (FILC-like mode)",
+                duration.count(),
+                interpolated->size());
+        }
 
         // Publish detailed per-stage timings
         if (debug_stats_pub_) {
@@ -792,10 +833,15 @@ private:
             s << "ROS->PCL:             " << ms(t_after_ros_to_pcl - t_start) << " ms\n";
             // SoA build included in interpolation stage (reported below)
             s << "Interpolation:         " << ms(t_after_interpolation - t_after_ros_to_pcl) << " ms\n";
-            s << "Projection:            " << ms(t_after_projection - t_after_interpolation) << " ms\n";
-            s << "Color extraction:      " << ms(t_after_fusion - t_after_projection) << " ms\n";
-            s << "Fusion:                " << ms(t_after_fusion - t_after_projection) << " ms (incl. extraction)\n";
-            s << "Publish colored cloud: " << ms(t_after_publish - t_after_fusion) << " ms\n";
+            if (enable_color_mapping_) {
+                s << "Projection:            " << ms(t_after_projection - t_after_interpolation) << " ms\n";
+                s << "Color extraction:      " << ms(t_after_fusion - t_after_projection) << " ms\n";
+                s << "Fusion:                " << ms(t_after_fusion - t_after_projection) << " ms (incl. extraction)\n";
+                s << "Publish colored cloud: " << ms(t_after_publish - t_after_fusion) << " ms\n";
+            } else {
+                s << "Mode:                  Interpolation-only (color mapping disabled)\n";
+                s << "Publish cloud:         " << ms(t_after_publish - t_after_interpolation) << " ms\n";
+            }
             s << "Total:                 " << duration.count() << " ms\n";
             if (cycle_ms > 0.0) {
                 s << "Cycle (prev->this):   " << std::fixed << std::setprecision(2) << cycle_ms << " ms\n";
@@ -1016,105 +1062,140 @@ private:
             interpolated = &soa_cloud;
         }
 
-        // Projection
-        std::vector<projection::LiDARPoint> lidar_points; lidar_points.reserve(interpolated->size());
-        for (size_t i = 0; i < interpolated->size(); ++i) {
-            lidar_points.emplace_back(
-                interpolated->x[i], interpolated->y[i], interpolated->z[i], 1.0f, i);
-        }
-        projection::ProjectionResult projection_results;
-        if (!projection_engine_->projectToAllCameras(lidar_points, projection_results)) {
-            RCLCPP_ERROR(get_logger(), "Projection failed");
-            return;
-        }
-
-        // Color extraction
-        std::map<std::string, projection::ColorExtractor::ColorExtractionResult> extraction_results;
-        std::map<std::string, std::vector<float>> pixel_distances;
-        const size_t total_points = interpolated->size();
-        for (const auto& cam_proj : projection_results.camera_projections) {
-            // Prepare pixel coordinates and indices
-            std::vector<cv::Point2f> pixel_coordinates; pixel_coordinates.reserve(cam_proj.projected_points.size());
-            std::vector<size_t> point_indices; point_indices.reserve(cam_proj.projected_points.size());
-            for (const auto& px : cam_proj.projected_points) {
-                pixel_coordinates.emplace_back(px.u, px.v);
-                point_indices.push_back(px.original_index);
+        // Check if color mapping is enabled
+        if (enable_color_mapping_) {
+            // Projection
+            std::vector<projection::LiDARPoint> lidar_points; lidar_points.reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                lidar_points.emplace_back(
+                    interpolated->x[i], interpolated->y[i], interpolated->z[i], 1.0f, i);
             }
-            auto it_img = camera_images.find(cam_proj.camera_id);
-            if (it_img == camera_images.end()) { continue; }
-            auto sparse_result = color_extractor_->extractColorsWithIndices(
-                it_img->second, pixel_coordinates, point_indices, extraction_config_);
-            // Dense remap
-            projection::ColorExtractor::ColorExtractionResult dense_result;
-            dense_result.colors.assign(total_points, cv::Vec3b(0, 0, 0));
-            dense_result.confidence_scores.assign(total_points, 0.0f);
-            dense_result.valid_extractions.assign(total_points, false);
-            dense_result.output_count = total_points;
-            dense_result.valid_colors = 0;
-            for (size_t k = 0; k < point_indices.size() && k < sparse_result.colors.size(); ++k) {
-                const size_t orig_idx = point_indices[k];
-                if (orig_idx >= total_points) continue;
-                dense_result.colors[orig_idx] = sparse_result.colors[k];
-                dense_result.confidence_scores[orig_idx] = sparse_result.confidence_scores[k];
-                dense_result.valid_extractions[orig_idx] = sparse_result.valid_extractions[k];
-                if (sparse_result.valid_extractions[k]) dense_result.valid_colors++;
+            projection::ProjectionResult projection_results;
+            if (!projection_engine_->projectToAllCameras(lidar_points, projection_results)) {
+                RCLCPP_ERROR(get_logger(), "Projection failed");
+                return;
             }
-            extraction_results[cam_proj.camera_id] = std::move(dense_result);
 
-            // Distances
-            auto calibration = calibration_manager_->getCalibration(cam_proj.camera_id);
-            if (calibration) {
-                double cx = calibration->K(0, 2);
-                double cy = calibration->K(1, 2);
-                std::vector<float> dense_distances(total_points, 0.0f);
-                for (size_t k = 0; k < point_indices.size() && k < pixel_coordinates.size(); ++k) {
+            // Color extraction
+            std::map<std::string, projection::ColorExtractor::ColorExtractionResult> extraction_results;
+            std::map<std::string, std::vector<float>> pixel_distances;
+            const size_t total_points = interpolated->size();
+            for (const auto& cam_proj : projection_results.camera_projections) {
+                // Prepare pixel coordinates and indices
+                std::vector<cv::Point2f> pixel_coordinates; pixel_coordinates.reserve(cam_proj.projected_points.size());
+                std::vector<size_t> point_indices; point_indices.reserve(cam_proj.projected_points.size());
+                for (const auto& px : cam_proj.projected_points) {
+                    pixel_coordinates.emplace_back(px.u, px.v);
+                    point_indices.push_back(px.original_index);
+                }
+                auto it_img = camera_images.find(cam_proj.camera_id);
+                if (it_img == camera_images.end()) { continue; }
+                auto sparse_result = color_extractor_->extractColorsWithIndices(
+                    it_img->second, pixel_coordinates, point_indices, extraction_config_);
+                // Dense remap
+                projection::ColorExtractor::ColorExtractionResult dense_result;
+                dense_result.colors.assign(total_points, cv::Vec3b(0, 0, 0));
+                dense_result.confidence_scores.assign(total_points, 0.0f);
+                dense_result.valid_extractions.assign(total_points, false);
+                dense_result.output_count = total_points;
+                dense_result.valid_colors = 0;
+                for (size_t k = 0; k < point_indices.size() && k < sparse_result.colors.size(); ++k) {
                     const size_t orig_idx = point_indices[k];
                     if (orig_idx >= total_points) continue;
-                    const auto& pixel = pixel_coordinates[k];
-                    float dx = pixel.x - static_cast<float>(cx);
-                    float dy = pixel.y - static_cast<float>(cy);
-                    dense_distances[orig_idx] = std::sqrt(dx*dx + dy*dy);
+                    dense_result.colors[orig_idx] = sparse_result.colors[k];
+                    dense_result.confidence_scores[orig_idx] = sparse_result.confidence_scores[k];
+                    dense_result.valid_extractions[orig_idx] = sparse_result.valid_extractions[k];
+                    if (sparse_result.valid_extractions[k]) dense_result.valid_colors++;
                 }
-                pixel_distances[cam_proj.camera_id] = std::move(dense_distances);
+                extraction_results[cam_proj.camera_id] = std::move(dense_result);
+
+                // Distances
+                auto calibration = calibration_manager_->getCalibration(cam_proj.camera_id);
+                if (calibration) {
+                    double cx = calibration->K(0, 2);
+                    double cy = calibration->K(1, 2);
+                    std::vector<float> dense_distances(total_points, 0.0f);
+                    for (size_t k = 0; k < point_indices.size() && k < pixel_coordinates.size(); ++k) {
+                        const size_t orig_idx = point_indices[k];
+                        if (orig_idx >= total_points) continue;
+                        const auto& pixel = pixel_coordinates[k];
+                        float dx = pixel.x - static_cast<float>(cx);
+                        float dy = pixel.y - static_cast<float>(cy);
+                        dense_distances[orig_idx] = std::sqrt(dx*dx + dy*dy);
+                    }
+                    pixel_distances[cam_proj.camera_id] = std::move(dense_distances);
+                }
             }
-        }
 
-        // Fusion
-        std::vector<size_t> all_indices; all_indices.reserve(interpolated->size());
-        for (size_t i = 0; i < interpolated->size(); ++i) all_indices.push_back(i);
-        auto fusion_result = multi_camera_fusion_->fuseColorsWithDistances(
-            extraction_results, pixel_distances, all_indices, fusion_config_);
+            // Fusion
+            std::vector<size_t> all_indices; all_indices.reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) all_indices.push_back(i);
+            auto fusion_result = multi_camera_fusion_->fuseColorsWithDistances(
+                extraction_results, pixel_distances, all_indices, fusion_config_);
 
-        // Build colored cloud
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
-        colored_cloud->reserve(interpolated->size());
-        for (size_t i = 0; i < interpolated->size(); ++i) {
-            pcl::PointXYZRGB point;
-            point.x = interpolated->x[i];
-            point.y = interpolated->y[i];
-            point.z = interpolated->z[i];
-            if (i < fusion_result.fused_colors.size() &&
-                fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
-                const auto& rgb = fusion_result.fused_colors[i];
-                point.r = rgb[0]; point.g = rgb[1]; point.b = rgb[2];
-            } else {
-                point.r = point.g = point.b = 128;
+            // Build colored cloud
+            pcl::PointCloud<pcl::PointXYZRGB>::Ptr colored_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+            colored_cloud->reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                pcl::PointXYZRGB point;
+                point.x = interpolated->x[i];
+                point.y = interpolated->y[i];
+                point.z = interpolated->z[i];
+                if (i < fusion_result.fused_colors.size() &&
+                    fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
+                    const auto& rgb = fusion_result.fused_colors[i];
+                    point.r = rgb[0]; point.g = rgb[1]; point.b = rgb[2];
+                } else {
+                    point.r = point.g = point.b = 128;
+                }
+                colored_cloud->push_back(point);
             }
-            colored_cloud->push_back(point);
-        }
 
-        // Publish colored cloud
-        sensor_msgs::msg::PointCloud2 output_msg; pcl::toROSMsg(*colored_cloud, output_msg);
-        output_msg.header = lidar_msg->header; colored_cloud_pub_->publish(output_msg);
+            // Publish colored cloud
+            sensor_msgs::msg::PointCloud2 output_msg; pcl::toROSMsg(*colored_cloud, output_msg);
+            output_msg.header = lidar_msg->header; colored_cloud_pub_->publish(output_msg);
+
+            // Log colored fusion stats
+            RCLCPP_DEBUG(get_logger(),
+                "PRISM Color Fusion: Points: %zu | Colored: %zu (%.1f%%)",
+                interpolated->size(), fusion_result.successful_fusions,
+                100.0f * fusion_result.successful_fusions / std::max<size_t>(1, interpolated->size()));
+        } else {
+            // Interpolation-only mode: publish interpolated cloud without colors
+            pcl::PointCloud<pcl::PointXYZI>::Ptr output_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            output_cloud->reserve(interpolated->size());
+            for (size_t i = 0; i < interpolated->size(); ++i) {
+                pcl::PointXYZI point;
+                point.x = interpolated->x[i];
+                point.y = interpolated->y[i];
+                point.z = interpolated->z[i];
+                point.intensity = interpolated->intensity[i];
+                output_cloud->push_back(point);
+            }
+            
+            sensor_msgs::msg::PointCloud2 output_msg; 
+            pcl::toROSMsg(*output_cloud, output_msg);
+            output_msg.header = lidar_msg->header; 
+            colored_cloud_pub_->publish(output_msg);
+            
+            RCLCPP_INFO_ONCE(get_logger(), 
+                "PRISM running in interpolation-only mode (color mapping disabled)");
+        }
 
         // Timings
         auto end_time = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - t_start);
-        // Use DEBUG level to avoid console bottleneck at high rates
-        RCLCPP_DEBUG(get_logger(),
-            "PRISM Fusion Pipeline (cache): %ld ms | Points: %zu | Colored: %zu (%.1f%%)",
-            duration.count(), interpolated->size(), fusion_result.successful_fusions,
-            100.0f * fusion_result.successful_fusions / std::max<size_t>(1, interpolated->size()));
+        
+        // Log performance based on mode
+        if (enable_color_mapping_) {
+            RCLCPP_DEBUG(get_logger(),
+                "PRISM Fusion Pipeline (cache): %ld ms | Points: %zu",
+                duration.count(), interpolated->size());
+        } else {
+            RCLCPP_DEBUG(get_logger(),
+                "PRISM Interpolation-only: %ld ms | Points: %zu (FILC-like mode)",
+                duration.count(), interpolated->size());
+        }
 
         if (debug_stats_pub_) {
             std_msgs::msg::String msg; std::ostringstream s;
@@ -1143,6 +1224,7 @@ private:
     std::string debug_interpolated_topic_;
     std::string interpolated_output_topic_;
     bool interpolation_enabled_ {false};
+    bool enable_color_mapping_ {true};
     bool grid_mode_ {true};
     double interpolation_scale_factor_ {2.0};
     double discontinuity_threshold_ {0.5};

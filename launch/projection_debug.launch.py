@@ -16,10 +16,11 @@ def generate_launch_description():
     config_dir = os.path.join(prism_share_dir, 'config')
     
     # Declare launch arguments
-    lidar_topic_arg = DeclareLaunchArgument(
-        'lidar_topic',
-        default_value='/ouster/points',
-        description='LiDAR point cloud topic'
+    params_file_default = os.path.join(prism_share_dir, 'config', 'prism_params.yaml')
+    params_file_arg = DeclareLaunchArgument(
+        'params_file',
+        default_value=params_file_default,
+        description='Path to the ROS2 parameters YAML (controls all settings)'
     )
     
     # PRISM projection debug node
@@ -28,34 +29,7 @@ def generate_launch_description():
         executable='prism_projection_debug_node',
         name='projection_debug_node',
         output='screen',
-        parameters=[{
-            # Camera configuration - 실제 토픽 이름에 맞게 설정
-            'camera_ids': ['camera_1', 'camera_2'],
-            
-            # Topic configuration  
-            'lidar_topic': LaunchConfiguration('lidar_topic'),
-            'output_topic_prefix': '/prism/projection_debug',
-            
-            # Calibration
-            'calibration_directory': config_dir,
-            
-            # Synchronization (increased tolerance for bagfile replay)
-            'time_tolerance_sec': 0.2,  # Increased from 0.1 to handle bagfile initial sync
-            'enable_time_sync': True,
-            
-            # Visualization parameters
-            'enable_status_overlay': True,
-            'point_radius': 3,
-            'overlay_alpha': 0.8,
-            
-            # Projection configuration
-            'projection.min_depth': 0.5,
-            'projection.max_depth': 50.0,
-            'projection.margin_pixels': 5,
-            'projection.enable_frustum_culling': True,
-            'projection.enable_distortion_correction': True,
-            'projection.enable_debug_visualization': True,
-        }],
+        parameters=[LaunchConfiguration('params_file')],
         remappings=[
             # 실제 카메라 토픽에 맞게 리매핑
             ('/camera/camera_1/image_raw', '/usb_cam_1/image_raw'),
@@ -91,7 +65,7 @@ def generate_launch_description():
     )
     
     return LaunchDescription([
-        lidar_topic_arg,
+        params_file_arg,
         # 압축 이미지를 raw로 변환
         image_republish_1,
         image_republish_2,
