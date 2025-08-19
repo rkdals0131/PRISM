@@ -258,10 +258,13 @@ private:
         // Set default calibration path using package-relative path
         try {
             auto package_share_dir = ament_index_cpp::get_package_share_directory("prism");
-            calibration_path_ = package_share_dir + "/config";
+            calibration_path_ = (std::filesystem::path(package_share_dir) / "config").string();
         } catch (const std::exception& e) {
-            // Fallback to relative path
-            calibration_path_ = "../share/prism/config";
+            // Fallback to temp directory for testing
+            std::filesystem::path temp_path = std::filesystem::temp_directory_path() / "prism" / "config";
+            std::filesystem::create_directories(temp_path);
+            calibration_path_ = temp_path.string();
+            RCLCPP_WARN(get_logger(), "Package share directory not found, using temp: %s", calibration_path_.c_str());
         }
         
         // Set default topic names
@@ -295,8 +298,9 @@ private:
         
         // Load CALICO-style multi-camera calibration (intrinsics + extrinsics)
         try {
-            const std::string intrinsic_file = calibration_path_ + "/multi_camera_intrinsic_calibration.yaml";
-            const std::string extrinsic_file = calibration_path_ + "/multi_camera_extrinsic_calibration.yaml";
+            const std::filesystem::path calib_dir(calibration_path_);
+            const std::string intrinsic_file = (calib_dir / "multi_camera_intrinsic_calibration.yaml").string();
+            const std::string extrinsic_file = (calib_dir / "multi_camera_extrinsic_calibration.yaml").string();
             
             if (std::filesystem::exists(intrinsic_file)) {
                 YAML::Node intrinsic_yaml = YAML::LoadFile(intrinsic_file);

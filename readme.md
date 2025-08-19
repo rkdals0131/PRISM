@@ -18,7 +18,7 @@
 
 ```bash
 # ROS2 워크스페이스에서
-cd /home/user1/ROS2_Workspace/ros2_ws
+cd ~/ROS2_Workspace/ros2_ws  # Or your workspace directory
 source .venv/bin/activate  # 가상환경 활성화
 
 # 패키지 빌드

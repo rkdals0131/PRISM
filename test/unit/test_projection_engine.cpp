@@ -6,6 +6,7 @@
 #include <opencv2/opencv.hpp>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
+#include <filesystem>
 
 using namespace prism::projection;
 using namespace prism::core;
@@ -47,6 +48,10 @@ protected:
     }
     
     void createTestCalibrationFiles() {
+        // Use filesystem to create temp file with proper path handling
+        std::filesystem::path temp_dir = std::filesystem::temp_directory_path();
+        test_config_file_ = (temp_dir / "test_projection_config.yaml").string();
+        
         // Create a simple test configuration
         YAML::Node config;
         
@@ -88,8 +93,7 @@ protected:
             0.0, 0.0, 0.0, 1.0
         };
         
-        // Save to test file
-        test_config_file_ = "/tmp/test_projection_config.yaml";
+        // Save to test file using the temp path we already set
         std::ofstream fout(test_config_file_);
         fout << config;
         fout.close();

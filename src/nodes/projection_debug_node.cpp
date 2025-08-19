@@ -7,6 +7,8 @@
 #include <yaml-cpp/yaml.h>
 #include <sstream>
 #include <iomanip>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <filesystem>
 
 namespace prism {
 namespace nodes {
@@ -79,23 +81,16 @@ void ProjectionDebugNode::loadParameters() {
     calibration_directory_ = this->get_parameter("calibration_directory").as_string();
     if (calibration_directory_.empty()) {
         try {
-            // Resolve package share dir at runtime
-            std::string pkg = "prism";
-            std::string cmd = std::string("python3 - <<'PY'\n") +
-                "import ament_index_python.packages as pk;\n" +
-                "print(pk.get_package_share_directory('prism'))\n" +
-                "PY";
-            FILE* pipe = popen(cmd.c_str(), "r");
-            if (pipe) {
-                char buffer[512]; std::string result;
-                while (fgets(buffer, sizeof(buffer), pipe) != nullptr) result += buffer;
-                pclose(pipe);
-                // Trim whitespace
-                result.erase(result.find_last_not_of("\n\r \t") + 1);
-                calibration_directory_ = result + "/config";
-            }
-        } catch (...) {
-            calibration_directory_ = "/tmp/prism/config"; // last resort
+            // Use ament_index_cpp to resolve package share directory
+            std::string package_share_dir = ament_index_cpp::get_package_share_directory("prism");
+            calibration_directory_ = (std::filesystem::path(package_share_dir) / "config").string();
+            RCLCPP_INFO(this->get_logger(), "Using calibration directory: %s", calibration_directory_.c_str());
+        } catch (const std::exception& e) {
+            // Fall back to a temp directory if package not found (e.g., during testing)
+            std::filesystem::path temp_dir = std::filesystem::temp_directory_path() / "prism" / "config";
+            std::filesystem::create_directories(temp_dir);
+            calibration_directory_ = temp_dir.string();
+            RCLCPP_WARN(this->get_logger(), "Package share directory not found, using temp: %s", calibration_directory_.c_str());
         }
     }
     

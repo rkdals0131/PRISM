@@ -3,7 +3,7 @@
 PRISM Fusion Node Launch File
 """
 
-import os
+from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -14,13 +14,11 @@ from launch_ros.actions import Node
 def generate_launch_description():
     """Generate launch description for PRISM fusion node."""
     
-    # Get package share directory
-    prism_share_dir = get_package_share_directory('prism')
+    # Get package share directory using pathlib for robust path handling
+    prism_share_dir = Path(get_package_share_directory('prism'))
     
     # Path to default parameter file
-    default_params_file = os.path.join(
-        prism_share_dir, 'config', 'prism_params.yaml'
-    )
+    default_params_file = str(prism_share_dir / 'config' / 'prism_params.yaml')
     
     # Declare launch arguments
     params_file_arg = DeclareLaunchArgument(

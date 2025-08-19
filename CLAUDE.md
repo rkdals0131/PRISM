@@ -10,7 +10,7 @@ PRISM (Point-cloud & RGB Integrated Sensing Module) is a high-performance ROS2 p
 
 ```bash
 # Build the package
-cd /home/user1/ROS2_Workspace/ros2_ws
+cd ~/ROS2_Workspace/ros2_ws  # Or use $ROS2_WS environment variable
 colcon build --packages-select prism
 
 # Build with optimizations enabled
@@ -29,7 +29,7 @@ colcon test --packages-select prism
 colcon test-result --verbose
 
 # Run specific unit test
-cd /home/user1/ROS2_Workspace/ros2_ws
+cd ~/ROS2_Workspace/ros2_ws  # Or use $ROS2_WS environment variable
 ./build/prism/test_interpolation_engine
 ./build/prism/test_projection_engine
 ./build/prism/test_calibration_manager
@@ -46,7 +46,7 @@ colcon test --packages-select prism --event-handlers console_direct+
 ```bash
 # Source ROS2 environment first
 source /opt/ros/humble/setup.bash
-source /home/user1/ROS2_Workspace/ros2_ws/install/setup.bash
+source ~/ROS2_Workspace/ros2_ws/install/setup.bash  # Or $ROS2_WS/install/setup.bash
 
 # Main PRISM launch
 ros2 launch prism prism.launch.py

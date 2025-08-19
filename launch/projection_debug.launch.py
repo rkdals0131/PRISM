@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PRISM Projection Debug Node Launch File for visualizing LiDAR projections on camera images."""
 
-import os
+from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -11,12 +11,12 @@ from launch_ros.actions import Node
 def generate_launch_description():
     """Generate launch description for PRISM projection debug node."""
     
-    # Get package share directory
-    prism_share_dir = get_package_share_directory('prism')
-    config_dir = os.path.join(prism_share_dir, 'config')
+    # Get package share directory using pathlib for robust path handling
+    prism_share_dir = Path(get_package_share_directory('prism'))
+    config_dir = prism_share_dir / 'config'
     
     # Declare launch arguments
-    params_file_default = os.path.join(prism_share_dir, 'config', 'prism_params.yaml')
+    params_file_default = str(config_dir / 'prism_params.yaml')
     params_file_arg = DeclareLaunchArgument(
         'params_file',
         default_value=params_file_default,
