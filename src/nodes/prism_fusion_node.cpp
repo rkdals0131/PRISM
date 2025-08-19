@@ -761,7 +761,8 @@ private:
                 point.y = interpolated->y[i];
                 point.z = interpolated->z[i];
                 
-                if (i < fusion_result.fused_colors.size()) {
+                if (i < fusion_result.fused_colors.size() && 
+                    fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
                     const auto& rgb = fusion_result.fused_colors[i];
                     // Colors are stored as RGB in extraction/fusion results
                     point.r = rgb[0];
@@ -1140,7 +1141,8 @@ private:
                 point.x = interpolated->x[i];
                 point.y = interpolated->y[i];
                 point.z = interpolated->z[i];
-                if (i < fusion_result.fused_colors.size()) {
+                if (i < fusion_result.fused_colors.size() &&
+                    fusion_result.fusion_confidence[i] >= fusion_config_.confidence_threshold) {
                     const auto& rgb = fusion_result.fused_colors[i];
                     point.r = rgb[0]; point.g = rgb[1]; point.b = rgb[2];
                 } else {
