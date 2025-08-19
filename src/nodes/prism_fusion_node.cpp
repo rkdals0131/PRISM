@@ -1,4 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <cv_bridge/cv_bridge.h>
@@ -51,7 +52,16 @@ public:
         declare_parameter("cameras", std::vector<std::string>());
         
         // Declare calibration parameters
-        declare_parameter("calibration.path", "/home/user1/ROS2_Workspace/ros2_ws/src/prism/config");
+        // Declare calibration path with package-relative default
+        std::string default_calib_path;
+        try {
+            auto package_share_dir = ament_index_cpp::get_package_share_directory("prism");
+            default_calib_path = package_share_dir + "/config";
+        } catch (const std::exception& e) {
+            // Fallback to relative path
+            default_calib_path = "../share/prism/config";
+        }
+        declare_parameter("calibration.path", default_calib_path);
         declare_parameter("calibration.intrinsic_file", "multi_camera_intrinsic_calibration.yaml");
         declare_parameter("calibration.extrinsic_file", "multi_camera_extrinsic_calibration.yaml");
         
@@ -245,8 +255,14 @@ private:
         cam2.image_topic = "/usb_cam_2/image_raw";
         camera_configs_.push_back(cam2);
         
-        // Set default calibration path
-        calibration_path_ = "/home/user1/ROS2_Workspace/ros2_ws/src/prism/config";
+        // Set default calibration path using package-relative path
+        try {
+            auto package_share_dir = ament_index_cpp::get_package_share_directory("prism");
+            calibration_path_ = package_share_dir + "/config";
+        } catch (const std::exception& e) {
+            // Fallback to relative path
+            calibration_path_ = "../share/prism/config";
+        }
         
         // Set default topic names
         lidar_input_topic_ = "/ouster/points";

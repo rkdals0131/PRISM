@@ -7,7 +7,7 @@ projection_debug_node:
   ros__parameters:
     lidar_topic: "/ouster/points/interpolated"
     output_topic_prefix: "/prism/projection_debug"
-    calibration_directory: "/home/user1/ROS2_Workspace/ros2_ws/install/prism/share/prism/config"
+    calibration_directory: ""  # Leave empty to use package default directory
     time_tolerance_sec: 0.2
     enable_time_sync: true
     enable_status_overlay: true
@@ -31,7 +31,7 @@ prism_fusion_node:
 
     # Calibration
     calibration:
-      path: "/home/user1/ROS2_Workspace/ros2_ws/src/prism/config"
+      path: ""  # Leave empty to use package default directory
       intrinsic_file: "multi_camera_intrinsic_calibration.yaml"
       extrinsic_file: "multi_camera_extrinsic_calibration.yaml"
 
