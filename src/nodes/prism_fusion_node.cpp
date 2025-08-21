@@ -230,6 +230,17 @@ private:
             // Load calibration path from parameters
             calibration_path_ = get_parameter("calibration.path").as_string();
             
+            // If calibration path is empty, use package default directory
+            if (calibration_path_.empty()) {
+                try {
+                    auto package_share_dir = ament_index_cpp::get_package_share_directory("prism");
+                    calibration_path_ = (std::filesystem::path(package_share_dir) / "config").string();
+                    RCLCPP_INFO(get_logger(), "Using default calibration path: %s", calibration_path_.c_str());
+                } catch (const std::exception& e) {
+                    RCLCPP_ERROR(get_logger(), "Failed to get package share directory: %s", e.what());
+                }
+            }
+            
             // Load topic names from parameters
             lidar_input_topic_ = get_parameter("topics.lidar_input").as_string();
             colored_output_topic_ = get_parameter("topics.colored_output").as_string();

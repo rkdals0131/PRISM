@@ -19,6 +19,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # ROS2 dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -37,6 +38,23 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc calib3d)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(OpenMP REQUIRED)
 find_package(yaml-cpp REQUIRED)
+
+# Set common dependencies
+set(dependencies
+  rclcpp
+  rclcpp_components
+  sensor_msgs
+  geometry_msgs
+  std_msgs
+  tf2_ros
+  tf2_geometry_msgs
+  cv_bridge
+  image_transport
+  pcl_ros
+  pcl_conversions
+  message_filters
+  ament_index_cpp
+)
 
 # Include directories
 include_directories(
@@ -90,10 +108,7 @@ target_link_libraries(prism_interpolation_node
 )
 
 ament_target_dependencies(prism_interpolation_node
-  rclcpp
-  sensor_msgs
-  pcl_conversions
-  pcl_ros
+  ${dependencies}
 )
 
 # Phase 3 Projection Debug Node
@@ -110,14 +125,7 @@ target_link_libraries(prism_projection_debug_node
 )
 
 ament_target_dependencies(prism_projection_debug_node
-  rclcpp
-  sensor_msgs
-  std_msgs
-  cv_bridge
-  image_transport
-  pcl_conversions
-  pcl_ros
-  rclcpp_components
+  ${dependencies}
 )
 
 # Phase 4 Color Extraction Node
@@ -134,15 +142,7 @@ target_link_libraries(prism_color_node
 )
 
 ament_target_dependencies(prism_color_node
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  std_msgs
-  cv_bridge
-  image_transport
-  pcl_conversions
-  pcl_ros
-  message_filters
+  ${dependencies}
 )
 
 # Phase 5 Fusion Node
@@ -160,30 +160,12 @@ target_link_libraries(prism_fusion_node
 )
 
 ament_target_dependencies(prism_fusion_node
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  std_msgs
-  cv_bridge
-  image_transport
-  pcl_conversions
-  pcl_ros
-  message_filters
+  ${dependencies}
 )
 
 # Dependencies for ROS2 components
 ament_target_dependencies(${PROJECT_NAME}_core
-  rclcpp
-  sensor_msgs
-  geometry_msgs
-  std_msgs
-  tf2_ros
-  tf2_geometry_msgs
-  cv_bridge
-  image_transport
-  pcl_ros
-  pcl_conversions
-  message_filters
+  ${dependencies}
 )
 
 # Installation
@@ -207,6 +189,10 @@ install(DIRECTORY
 
 install(DIRECTORY
   config
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(DIRECTORY
   launch
   DESTINATION share/${PROJECT_NAME}
 )
