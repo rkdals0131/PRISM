@@ -38,7 +38,6 @@ public:
         declare_parameter("topics.camera_1_input", "/usb_cam_1/image_raw");
         declare_parameter("topics.camera_2_input", "/usb_cam_2/image_raw");
         declare_parameter("topics.colored_output", "/ouster/points/colored");
-        declare_parameter("topics.debug_interpolated", "/prism/debug/interpolated");
         
         // Synchronization / rate control
         declare_parameter("synchronization.queue_size", 1);
@@ -244,7 +243,6 @@ private:
             // Load topic names from parameters
             lidar_input_topic_ = get_parameter("topics.lidar_input").as_string();
             colored_output_topic_ = get_parameter("topics.colored_output").as_string();
-            debug_interpolated_topic_ = get_parameter("topics.debug_interpolated").as_string();
             
             RCLCPP_INFO(get_logger(), "Loaded configuration from ROS2 parameters");
             
@@ -281,7 +279,6 @@ private:
         // Set default topic names
         lidar_input_topic_ = "/ouster/points";
         colored_output_topic_ = "/ouster/points/colored";
-        debug_interpolated_topic_ = "/prism/debug/interpolated";
         
         // Set default configuration values
         interpolation_config_.spline_tension = 0.5f;
@@ -476,12 +473,6 @@ private:
         // Debug statistics publisher (shared topic with projection debug)
         debug_stats_pub_ = create_publisher<std_msgs::msg::String>(
             "/prism/projection_debug/statistics", 10);
-        
-        // Debug publishers if enabled
-        if (get_parameter("enable_debug").as_bool()) {
-            debug_interpolated_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-                debug_interpolated_topic_, pub_qos);
-        }
     }
     
     void syncCallback(
@@ -1252,7 +1243,6 @@ private:
     std::string calibration_path_;
     std::string lidar_input_topic_;
     std::string colored_output_topic_;
-    std::string debug_interpolated_topic_;
     std::string interpolated_output_topic_;
     bool interpolation_enabled_ {false};
     bool enable_color_mapping_ {true};
@@ -1285,7 +1275,6 @@ private:
     std::mutex image_cache_mutex_;
     
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr colored_cloud_pub_;
-    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr debug_interpolated_pub_;
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr debug_stats_pub_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr interpolated_cloud_pub_;
 

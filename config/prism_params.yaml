@@ -27,7 +27,6 @@ prism_fusion_node:
       camera_1_input: "/usb_cam_1/image_raw"
       camera_2_input: "/usb_cam_2/image_raw"
       colored_output: "/ouster/points/colored"
-      debug_interpolated: "/prism/debug/interpolated"
 
     # Calibration
     calibration:
@@ -41,7 +40,7 @@ prism_fusion_node:
       min_interval_ms: 0
 
     # Color mapping control (NEW)
-    enable_color_mapping: true  # Set to false for interpolation-only mode (FILC-like performance)
+    enable_color_mapping: false  # Set to false for interpolation-only mode (FILC-like performance)
 
     # Interpolation disabled (use raw points)
     interpolation:
